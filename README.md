@@ -46,9 +46,9 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 |----------|--------------|--------|
 | ARM aarch64 (Pi 5, Orange Pi) | NEON + SVE2 + Vulkan | **Full Support** |
 | x86_64 Linux | Vulkan + OpenMP + Eigen | **Full Support** |
-| NVIDIA GPU (CUDA 12.x+) | cuBLAS GEMM + GPU Particle Filter | **Full Support** (SM 75–90) |
+| NVIDIA GPU (CUDA 12.x / 13.x) | cuBLAS GEMM + GPU Particle Filter | **Full Support** (SM 75–120) |
 
-> **Note**: CUDA 12.x supports Turing through Hopper (SM 75–90). Blackwell (SM 100) requires CUDA 13+ which is not yet in Ubuntu official repositories. See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) for details.
+> **Note**: CUDA 12.x covers Turing through Hopper (SM 75–90). CUDA 13.x adds Blackwell — including consumer RTX 50-series (**SM 120**, e.g. RTX 5070/5080/5090). Verified on an RTX 5070 Ti (SM 120) with CUDA 13.1. To build for your exact GPU, configure with `-DCMAKE_CUDA_ARCHITECTURES=native -DOPTMATH_CUDA_NATIVE=ON`. See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) for details.
 
 ---
 
@@ -364,7 +364,7 @@ Before deploying any Kalman filter, verify:
 - **Graceful Fallback**: CUDA → SVE2 → NEON → Eigen with jitter + retry for numerical robustness
 - **Single Precision**: Consistent use of `float` for SIMD vectorization
 
-> **CUDA Status**: Active for SM 75–90 (CUDA 12.x). Blackwell SM 100 requires CUDA 13+ (see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md))
+> **CUDA Status**: Active for SM 75–90 (CUDA 12.x) and SM 75–120 incl. Blackwell RTX 50-series (CUDA 13.x). Verified on RTX 5070 Ti / SM 120 with CUDA 13.1 (see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md))
 
 ### Software Quality
 
@@ -389,7 +389,7 @@ Before deploying any Kalman filter, verify:
 
 - **ARM NEON/SVE2**: Automatic on ARM aarch64 platforms
 - **Vulkan SDK + glslang-tools**: For GPU-accelerated particle filter (Vulkan 1.3+); `glslang-tools` provides `glslangValidator` to compile GLSL shaders to SPIR-V
-- **NVIDIA CUDA Toolkit**: For GPU-accelerated GEMM and particle filter (12.x supports SM 75–90; 13+ needed for Blackwell SM 100)
+- **NVIDIA CUDA Toolkit**: For GPU-accelerated GEMM and particle filter (12.x supports SM 75–90; 13.x adds Blackwell, incl. RTX 50-series SM 120). Ensure `nvcc` is on `PATH` (e.g. `export PATH=/usr/local/cuda/bin:$PATH`) so CMake detects it.
 - **OpenMP**: For parallel particle filter
 
 ### Installation (Ubuntu/Debian)
@@ -426,6 +426,12 @@ mkdir -p build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 
+# Recommended when CUDA is enabled: build for your exact GPU.
+# Required for Blackwell / RTX 50-series (SM 120) on CUDA 13.x, whose SM is not in
+# the default architecture list.
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=native -DOPTMATH_CUDA_NATIVE=ON
+make -j$(nproc)
+
 # Or explicitly disable CUDA if needed
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_COMPILER=""
 make -j$(nproc)
@@ -459,7 +465,9 @@ python3 ../scripts/plot_benchmarks.py .
 | Option | Description |
 |--------|-------------|
 | `-DCMAKE_CUDA_COMPILER=""` | Disable CUDA (e.g., if toolkit is not installed or causes issues) |
-| `-DCMAKE_BUILD_TYPE=Release` | Optimized build with `-O3 -march=native` |
+| `-DCMAKE_CUDA_ARCHITECTURES=native` | Build CUDA code for the detected GPU only (required for Blackwell SM 120 on CUDA 13.x) |
+| `-DOPTMATH_CUDA_NATIVE=ON` | Make the OptimizedKernels dependency honor `native` instead of its default multi-arch list |
+| `-DCMAKE_BUILD_TYPE=Release` | Optimized build with `-O3 -march=native` (forwarded to nvcc's host compiler via `-Xcompiler` for ABI consistency) |
 | `-DCMAKE_BUILD_TYPE=Debug` | Debug build with symbols |
 
 ### Build Outputs
@@ -671,7 +679,7 @@ Modern-Computational-Nonlinear-Filtering/
 Contributions welcome. Areas of interest:
 
 1. **Additional Test Problems**: More challenging benchmark scenarios
-2. **GPU Optimization**: CUDA sigma point propagation, cuSOLVER integration (requires CUDA 13+)
+2. **GPU Optimization**: CUDA sigma point propagation, cuSOLVER integration (CUDA 13.x, Blackwell SM 120)
 3. **Adaptive Methods**: Automatic parameter tuning (adaptive Q/R)
 4. **Multi-Sensor Fusion**: Asynchronous measurement handling
 5. **Extended Benchmarks**: Monte Carlo consistency analysis, filter divergence studies
@@ -716,5 +724,5 @@ MIT License - see LICENSE file for details.
 ---
 
 **Version**: 3.1.0
-**Last Updated**: April 2026
-**Platform**: ARM aarch64 (Raspberry Pi 5, Orange Pi 5/6) + x86_64 (Vulkan + CUDA + Eigen) + NVIDIA GPU (SM 75–90 via CUDA 12.x)
+**Last Updated**: May 2026
+**Platform**: ARM aarch64 (Raspberry Pi 5, Orange Pi 5/6) + x86_64 (Vulkan + CUDA + Eigen) + NVIDIA GPU (SM 75–120 via CUDA 12.x/13.x; Blackwell RTX 50-series verified on SM 120 / CUDA 13.1)
