@@ -27,6 +27,14 @@ if(CMAKE_CUDA_COMPILER)
     # Define CUDA macro for FilterMath
     add_compile_definitions(OPTMATH_USE_CUDA)
 
+    # OPTMATH_USE_CUDA makes the OptMath headers pull in <cuda_runtime.h> and call into
+    # cudart from our pure-C++ targets. The OptimizedKernels dependency links CUDA::cudart
+    # PRIVATEly, so the toolkit include dir + cudart are NOT propagated to consumers.
+    # Supply them globally here so g++-compiled .cpp targets find the headers and link.
+    find_package(CUDAToolkit REQUIRED)
+    include_directories(${CUDAToolkit_INCLUDE_DIRS})
+    link_libraries(CUDA::cudart)
+
     set(NLF_HAS_CUDA TRUE)
 else()
     message(STATUS "CUDA not found - GPU acceleration disabled")
@@ -45,7 +53,16 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
         message(STATUS "LTO/IPO not supported: ${lto_error}")
     endif()
     add_compile_definitions(EIGEN_NO_DEBUG)
-    add_compile_options(-O3 -march=native)
+    # Host optimization flags. nvcc rejects -march=native directly ("Unknown option"),
+    # so CXX gets it straight while CUDA forwards it to the host compiler via -Xcompiler.
+    # Both languages MUST enable the same arch: -march=native raises Eigen's
+    # EIGEN_MAX_ALIGN_BYTES from 16 to 32, and mixing 16- and 32-byte-aligned Eigen objects
+    # across the C++/CUDA translation-unit boundary corrupts the heap ("free(): invalid
+    # pointer", e.g. a VectorXf allocated in a .cu and freed in a .cpp). The OptimizedKernels
+    # dependency inherits these directory options, so this keeps its .cpp/.cu TUs ABI-consistent.
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-O3>
+                        $<$<COMPILE_LANGUAGE:CXX>:-march=native>
+                        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-O3,-march=native>)
 endif()
 
 # Helper function to enable LTO on non-CUDA targets
