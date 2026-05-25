@@ -11,6 +11,9 @@ optimized_data/
 eigen_install/
 *.csv
 *.png
+# ...but keep documentation/result images checked in
+!docs/images/
+!docs/images/*.png
 .DS_Store
 _deps/
 nlfvenv/

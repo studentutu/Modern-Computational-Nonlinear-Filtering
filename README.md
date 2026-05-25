@@ -113,50 +113,76 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 
 ## Benchmark Results
 
-Four challenging problems tested with UKF, SRUKF, and fixed-lag smoothers. Benchmarks run with FilterMath dispatch layer (SVE2/NEON on ARM, Eigen on x86_64).
+Four challenging problems tested with UKF, SRUKF, and fixed-lag smoothers. Benchmarks run through the FilterMath dispatch layer (CUDA cuBLAS / SVE2 / NEON / Eigen, selected at runtime by platform).
 
-> **Latest run**: April 3, 2026 on Ubuntu 24.04 x86_64 (Vulkan + OpenMP + Eigen)
+> **Latest run**: May 2026 on **Ubuntu 26.04 x86_64**, **NVIDIA GeForce RTX 5070 Ti (Blackwell, SM 120)** with **CUDA 13.1**, Eigen 3.4, Vulkan 1.4, GCC 15.2. All **24/24** CTest cases pass (8 filter tests + 16 OptimizedKernels GPU/SIMD tests, including the CUDA kernel suite on the Blackwell GPU).
+
+Reproduce everything below with:
+
+```bash
+# from the build directory (see Build Instructions)
+./Benchmarks/run_benchmarks                              # writes benchmark_results.csv + trajectory CSVs
+source ../.nlfvenv/bin/activate                          # Python venv created by the build
+python3 ../scripts/plot_benchmarks.py .                  # writes the PNGs shown here
+```
+
+### Summary Across All Problems
+
+**Estimation accuracy** — filtered vs. smoothed RMSE and filter consistency (median NEES):
+
+![RMSE / NEES comparison](docs/images/benchmark_rmse_comparison.png)
+
+**Computational cost** — per-step and total wall-clock time (x86_64 + Eigen path):
+
+![Timing comparison](docs/images/benchmark_timing_comparison.png)
+
+**Convergence & stability** — time-to-converge and divergence counts:
+
+![Convergence comparison](docs/images/benchmark_convergence_comparison.png)
+
+Consolidated metrics from the latest run (`benchmark_results.csv`):
+
+| Problem | Filter | RMSE | Smoothed RMSE | NEES median | In 95% | Avg step | Total | Div |
+|---------|--------|-----:|--------------:|------------:|-------:|---------:|------:|----:|
+| Coupled Osc 10D | UKF | 1.457 | — | 9.89 | 94.5% | 0.0076 ms | 38.1 ms | 0 |
+| Coupled Osc 10D | SRUKF | 1.457 | — | 9.89 | 94.5% | 0.0082 ms | 41.7 ms | 0 |
+| Coupled Osc 10D | UKF+Smoother | 1.457 | **1.148** | 9.89 | 94.5% | 0.0275 ms | 138.0 ms | 0 |
+| Coupled Osc 10D | SRUKF+Smoother | 1.457 | **1.148** | 9.89 | 94.5% | 0.0400 ms | 201.1 ms | 0 |
+| Van der Pol 2D | UKF | 0.468 | — | 1.14 | 95.9% | 0.00039 ms | 0.81 ms | 0 |
+| Van der Pol 2D | SRUKF | 0.466 | — | 1.14 | 96.0% | 0.00027 ms | 0.57 ms | 0 |
+| Van der Pol 2D | SRUKF+Smoother | 0.466 | **0.430** | 1.14 | 96.0% | 0.0050 ms | 10.2 ms | 0 |
+| Bearing-Only 4D | UKF | 63.81 | — | 3.77 | 99.6% | 0.00052 ms | 0.16 ms | 176 |
+| Bearing-Only 4D | SRUKF | 64.17 | — | 3.77 | 99.6% | 0.00046 ms | 0.15 ms | 175 |
+| Bearing-Only 4D | SRUKF+Smoother | 64.17 | **52.03** | 3.77 | 99.6% | 0.0108 ms | 3.25 ms | 175 |
+| Reentry 6D | UKF | 369.0 | — | 5.00 | 95.9% | 0.0024 ms | 0.72 ms | 0 |
+| Reentry 6D | SRUKF | 369.2 | — | 4.99 | 95.6% | 0.0024 ms | 0.73 ms | 0 |
+| Reentry 6D | SRUKF+Smoother | 369.2 | **236.8** | 4.99 | 95.6% | 0.0176 ms | 5.30 ms | 0 |
 
 ### Coupled Oscillators (10D State, 5D Observation)
 
-| Filter | RMSE | Smoothed RMSE | NEES median | In 95% bounds | Avg Step Time | Divergences |
-|--------|------|---------------|-------------|---------------|---------------|-------------|
-| **UKF** | 1.457 | — | 9.89 | 94.5% | 0.025 ms | 0 |
-| **SRUKF** | 1.457 | — | 9.89 | 94.5% | 0.017 ms | 0 |
-| **UKF+Smoother** | 1.457 | **1.148** | 9.89 | 94.5% | 0.141 ms | 0 |
-| **SRUKF+Smoother** | 1.457 | **1.148** | 9.89 | 94.5% | 0.187 ms | 0 |
+![Coupled Oscillators trajectories](docs/images/coupled_osc_srukf_smooth_plot.png)
 
-Smoothing improves RMSE by **21%** on this 10-dimensional problem. NEES 94.5% in chi-squared bounds indicates excellent filter consistency.
+Ten coupled states tracked over 50 s; True, Filtered, and Smoothed curves are nearly indistinguishable across all dimensions. Smoothing improves RMSE by **21%** (1.457 → 1.148). NEES 94.5% in chi-squared bounds indicates excellent consistency. This is the case that previously failed with NaN before the v3.1.0 audit (resolved via dimension-adaptive sigma-point parameters and a safe Cholesky downdate) — now rock-solid with zero divergences.
 
 ### Van der Pol Oscillator (2D State, 1D Observation)
 
-| Filter | RMSE | Smoothed RMSE | NEES median | In 95% bounds | Avg Step Time | Divergences |
-|--------|------|---------------|-------------|---------------|---------------|-------------|
-| **UKF** | 0.468 | — | 1.14 | 95.9% | 0.001 ms | 0 |
-| **SRUKF** | 0.466 | — | 1.14 | 96.0% | 0.0005 ms | 0 |
-| **SRUKF+Smoother** | 0.466 | **0.430** | 1.14 | 96.0% | 0.022 ms | 0 |
+![Van der Pol trajectories](docs/images/vanderpol_srukf_smooth_plot.png)
 
-Smoothing improves RMSE by **8%**. SRUKF is 2.9x faster than UKF on this 2D problem.
+Classic relaxation oscillator: slow drift in `x0` with sharp limit-cycle transitions in `x1` (the spikes near t≈1.5 s and t≈11 s). The filter captures the fast transitions without lag; the smoother visibly tightens the estimate in noisy stretches. Smoothing improves RMSE by **8%** (0.466 → 0.430). SRUKF is ~2× faster than UKF on this small problem.
 
 ### Bearing-Only Tracking (4D State, 1D Observation)
 
-| Filter | RMSE | Smoothed RMSE | NEES median | In 95% bounds | Divergences |
-|--------|------|---------------|-------------|---------------|-------------|
-| **UKF** | 63.81 | — | 3.77 | 99.6% | 176 |
-| **SRUKF** | 64.17 | — | 3.77 | 99.6% | 175 |
-| **SRUKF+Smoother** | 64.17 | **52.03** | 3.77 | 99.6% | 175 |
+![Bearing-only trajectories](docs/images/bearing_srukf_smooth_plot.png)
 
-Weak observability problem (bearing-only). Smoothing improves RMSE by **19%**. "Divergences" reflect inherently weak observability during early trajectory, not filter instability.
+Weak-observability problem: angle-only measurements barely constrain range, so estimates track well for ~15 s then drift (visible divergence in all four states). Smoothing improves RMSE by **19%** (64.17 → 52.03) but cannot fully recover the lost range. The high "divergence" count (~175) reflects inherent observability limits during the early trajectory, not filter instability — NEES stays at 99.6% in-bounds throughout.
 
 ### Reentry Vehicle (6D State, 3D Observation)
 
-| Filter | RMSE | Smoothed RMSE | NEES median | In 95% bounds | Divergences |
-|--------|------|---------------|-------------|---------------|-------------|
-| **UKF** | 369.0 m | — | 4.99 | 95.9% | 0 |
-| **SRUKF** | 369.2 m | — | 4.99 | 95.6% | 0 |
-| **SRUKF+Smoother** | 369.2 m | **236.8 m** | 4.99 | 95.6% | 0 |
+![Reentry vehicle trajectories](docs/images/reentry_srukf_smooth_plot.png)
 
-Realistic spacecraft reentry tracking with altitude-dependent gravity (gravitational parameter μ/r²), exponential atmosphere drag model, and radar on Earth's surface. NEES median 4.99 (expected ~6) with 95.6% in bounds indicates excellent filter consistency. Smoothing improves RMSE by **36%**.
+Realistic spacecraft reentry with altitude-dependent gravity (μ/r²), exponential-atmosphere drag, and a ground-based radar. Position states (`x0`–`x2`) track the truth almost exactly; the noisy velocity states (`x3`, `x5`) show the smoother clearly reducing noise relative to the filter. NEES median 4.99 (expected ~6) with 95.6% in bounds. Smoothing improves RMSE by **36%** (369.2 → 236.8) — the largest gain of the four problems.
+
+> **Note on the trajectory plots**: the Smoothed (red) curve is correctly aligned to the time it estimates and ends one fixed-lag window before the filtered curve (the smoother has no refined estimate for the most recent `lag` steps). Earlier revisions showed a spurious run of leading zeros here; that was a CSV-writer alignment bug (the RMSE numbers were always correct) and is fixed as of the latest commit.
 
 ### Filter & Smoother Test Results
 
@@ -408,6 +434,26 @@ sudo apt install vulkan-tools libvulkan-dev
 cd ~
 git clone https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA.git
 ```
+
+#### Optional: NVIDIA CUDA (GPU acceleration)
+
+CUDA is auto-detected at configure time, but **only if `nvcc` is on your `PATH`** — installing the toolkit alone is not enough. Install the toolkit (12.x for Turing–Hopper, **13.x for Blackwell / RTX 50-series**), then expose it:
+
+```bash
+# Install the toolkit (example: CUDA 13.1 on Ubuntu, or use the .run/.deb from
+# https://developer.nvidia.com/cuda-downloads)
+sudo apt install cuda-toolkit-13-1
+
+# Put nvcc + runtime libs on PATH. Append to ~/.bashrc to persist across shells:
+export PATH=/usr/local/cuda/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+
+# Verify CMake will find it
+nvcc --version          # should print the toolkit version
+nvidia-smi              # should list your GPU + driver
+```
+
+> CUDA 13.x ships `nvcc` that accepts host GCC up to 15. The build forwards `-march=native` to the CUDA host compiler via `-Xcompiler`, so the C++ and CUDA translation units stay ABI-consistent (mismatched Eigen alignment between them otherwise corrupts the heap).
 
 ---
 
