@@ -16,8 +16,11 @@ if(CMAKE_CUDA_COMPILER)
 
     # Detect CUDA architectures
     if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-        # Support Turing (75), Ampere (80,86), Ada Lovelace (89), Hopper (90)
-        # Note: Blackwell (100) requires CUDA 13+ - see DEVELOPMENT_NOTES.md
+        # Default multi-arch list: Turing (75), Ampere (80,86), Ada Lovelace (89),
+        # Hopper (90). Blackwell (datacenter SM 100, consumer RTX 50-series SM 120)
+        # needs CUDA 13.x and is NOT in this list — build for it explicitly with
+        # -DCMAKE_CUDA_ARCHITECTURES=native -DOPTMATH_CUDA_NATIVE=ON. See
+        # DEVELOPMENT_NOTES.md (verified on RTX 5070 Ti / SM 120, CUDA 13.1).
         set(CMAKE_CUDA_ARCHITECTURES 75 80 86 89 90)
     endif()
 

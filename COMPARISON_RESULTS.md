@@ -2,8 +2,18 @@
 
 **Final Results After Bug Fixes and Cleanup**
 
-> **Status (v3.1.0, April 2026)**: All benchmark problems now working, including 10D Coupled Oscillators.
-> See [SRUKF_STATUS.md](SRUKF_STATUS.md) for current implementation status and [FINAL_AUDIT_SUMMARY.md](FINAL_AUDIT_SUMMARY.md) for complete audit history.
+> ⚠️ **HISTORICAL SNAPSHOT (Feb–Apr 2026, SRUKF debugging era).** This document
+> records the before/after of the v3.0 SRUKF bug-fix campaign and the lessons
+> learned. Some figures below reflect an **earlier problem configuration** (e.g.
+> the bearing-only run at ~17 m RMSE / NEES 7.5e11, and the note that 10D RMSE
+> showed NaN or "needs future work") and are **superseded** — 10D Coupled
+> Oscillators and the metric computation have since been fixed and are rock-solid.
+>
+> **For current, authoritative numbers** see [README.md](README.md) (Benchmark
+> Results), [SRUKF_STATUS.md](SRUKF_STATUS.md), and
+> [FINAL_AUDIT_SUMMARY.md](FINAL_AUDIT_SUMMARY.md). As of **v3.2.0 (May 2026)**:
+> all 4 problems pass with zero unexpected divergences, and compute kernels come
+> from OptMathKernels pinned at **v0.5.15** (CUDA 13.x / Blackwell SM 120).
 
 ## Test Problems Executed
 

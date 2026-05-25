@@ -117,7 +117,12 @@ inline Eigen::VectorXf mat_vec_mul(const Eigen::MatrixXf& A, const Eigen::Vector
 // ========================================================================
 //  Cholesky (lower-triangular L where A = L L^T)
 //  Returns empty matrix on failure.
-//  Dispatch: NEON > Eigen (CUDA cuSOLVER not yet implemented in OptimizedKernels)
+//  Dispatch: NEON > Eigen.
+//  OptMathKernels v0.5.10+ exposes a cuSOLVER cuda_cholesky (potrf), but the
+//  covariance factors here are small (typically <= ~10x10), so a host<->device
+//  round-trip costs far more than the factorization itself. GPU Cholesky is
+//  therefore intentionally NOT on this path; it is reserved for a future
+//  large-matrix dispatch. See DEVELOPMENT_NOTES.md.
 // ========================================================================
 /**
  * Compute lower-triangular Cholesky factor L such that A = L * L^T.
@@ -125,8 +130,8 @@ inline Eigen::VectorXf mat_vec_mul(const Eigen::MatrixXf& A, const Eigen::Vector
  * so the caller can apply a jitter-and-retry or LDLT fallback).
  */
 inline Eigen::MatrixXf cholesky(const Eigen::MatrixXf& A) {
-    // Note: CUDA dispatch disabled - cuda_cholesky not implemented in OptimizedKernels
-    // TODO: Enable when cuSOLVER wrappers are added to OptimizedKernels
+    // CUDA cuSOLVER path deliberately omitted for these small SPD matrices
+    // (PCIe round-trip > compute). cuda_cholesky exists upstream if needed later.
 
 #if FILTERMATH_ARM64
     if (optmath::neon::is_available()) {
@@ -143,7 +148,8 @@ inline Eigen::MatrixXf cholesky(const Eigen::MatrixXf& A) {
 // ========================================================================
 //  Matrix inverse  —  NEON > Eigen
 //  Returns empty matrix on failure.
-//  Note: CUDA dispatch disabled - cuda_inverse not implemented in OptimizedKernels
+//  No GPU path: OptMathKernels provides cuda_cholesky_inverse (SPD only), not a
+//  general dense inverse, and these matrices are small. Prefer solve_spd().
 // ========================================================================
 /**
  * Compute the full inverse A^{-1} via NEON or Eigen full-pivot LU.
@@ -151,7 +157,6 @@ inline Eigen::MatrixXf cholesky(const Eigen::MatrixXf& A) {
  * kalman_gain() when possible, as they avoid explicit inversion.
  */
 inline Eigen::MatrixXf inverse(const Eigen::MatrixXf& A) {
-    // TODO: Enable CUDA when cuSOLVER wrappers are added to OptimizedKernels
 
 #if FILTERMATH_ARM64
     if (optmath::neon::is_available()) {
@@ -169,7 +174,8 @@ inline Eigen::MatrixXf inverse(const Eigen::MatrixXf& A) {
 // ========================================================================
 //  SPD solve  A x = b  (A symmetric positive-definite)
 //  Returns empty vector on failure.
-//  Dispatch: NEON > Eigen (CUDA cuSOLVER not yet implemented in OptimizedKernels)
+//  Dispatch: NEON > Eigen. cuSOLVER cuda_solve / cuda_cholesky_solve exist in
+//  OptMathKernels v0.5.10+ but are not used here (small matrices; PCIe-bound).
 // ========================================================================
 /**
  * Solve A * x = b for x where A is symmetric positive-definite.
@@ -177,7 +183,6 @@ inline Eigen::MatrixXf inverse(const Eigen::MatrixXf& A) {
  * vector on failure so the caller can fall back to a different strategy.
  */
 inline Eigen::VectorXf solve_spd(const Eigen::MatrixXf& A, const Eigen::VectorXf& b) {
-    // TODO: Enable CUDA when cuSOLVER wrappers are added to OptimizedKernels
 
 #if FILTERMATH_ARM64
     if (optmath::neon::is_available()) {

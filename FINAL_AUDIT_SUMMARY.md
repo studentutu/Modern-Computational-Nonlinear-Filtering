@@ -1,8 +1,8 @@
 # Final Comprehensive Audit Summary
 ## Modern Computational Nonlinear Filtering
 
-**Date**: April 12, 2026
-**Status**: Production-ready with CUDA/SVE2/NEON/Vulkan acceleration and cross-platform Eigen fallback. CUDA active for SM 75–90; Blackwell SM 100 pending CUDA 13+.
+**Date**: May 25, 2026
+**Status**: Production-ready with CUDA/SVE2/NEON/Vulkan acceleration and cross-platform Eigen fallback. CUDA active for SM 75–120 including Blackwell RTX 50-series (verified on RTX 5070 Ti / SM 120, CUDA 13.1). Compute kernels from OptMathKernels pinned at release tag **v0.5.15**.
 
 ---
 
@@ -103,9 +103,22 @@ Orange Pi (aarch64 A720/SVE2/NEON/Mali-G720) optimization.
 3. `BenchmarkRunner.h`: replaced O(n log n) full sort with O(n) `std::nth_element` for
    median NEES computation
 
+### Phase 7 (May 25, 2026): CUDA 13 / Blackwell Activation & Kernel Release Pinning
+
+- Activated CUDA 13.x: full Blackwell support, **verified on RTX 5070 Ti (SM 120)**
+  with CUDA 13.1. CMakeLists forwards `-march=native` to nvcc's host compiler via
+  `-Xcompiler` to keep C++/CUDA Eigen alignment ABI-consistent.
+- **Adopted the OptMathKernels tag/release format**: pinned the dependency via
+  `OPTMATH_RELEASE_TAG` (now **v0.5.15**) instead of tracking `main`. Audited the
+  upstream v0.5.13 → v0.5.15 diff — only behavioral change is Vulkan discrete-GPU
+  preference (now selects the RTX 5070 Ti); no public-API change. See
+  DEVELOPMENT_NOTES.md → "OptMathKernels Dependency — Release Audit & Pinning Policy".
+- Created the repository's first annotated release tag (`v3.2.0`).
+- Rebuilt, **24/24 CTest pass**, benchmarks rerun (RMSE/NEES unchanged), plots regenerated.
+
 ---
 
-## Current Benchmark Results (Apr 12, 2026)
+## Current Benchmark Results (May 25, 2026 — OptMathKernels v0.5.15)
 
 | Problem | Filter | RMSE | Smoother RMSE | NEES median | In 95% bounds | Divergences |
 |---------|--------|------|---------------|-------------|---------------|-------------|
@@ -132,7 +145,7 @@ All 24 CTest targets pass (8 filter tests/demos + 16 OptimizedKernels tests incl
               ┌─────────────▼──┐  ┌───▼────┐  ┌──▼─────────────┐
               │  CUDA (cuBLAS) │  │ SVE2   │  │  Eigen         │
               │  (GEMM ≥32x32) │  │ (GEMM) │  │  (fallback)    │
-              │  [SM 75-90]    │  └───┬────┘  └────────────────┘
+              │  [SM 75-120]   │  └───┬────┘  └────────────────┘
               └────────────────┘      │
                                  ┌────▼──────────┐
                                  │  NEON          │
@@ -151,17 +164,21 @@ All 24 CTest targets pass (8 filter tests/demos + 16 OptimizedKernels tests incl
 
 ## Remaining Known Limitations (non-critical)
 
-- FilterMath dispatch: SVE2 only used for GEMM; Cholesky/Inverse/Solve dispatch is
-  NEON-only (SVE2 implementations not yet available in OptMathKernels)
+- FilterMath dispatch: SVE2 only used for GEMM; Cholesky/Inverse/Solve stay on
+  NEON > Eigen. OptMathKernels v0.5.10+ now exposes cuSOLVER `cuda_cholesky` /
+  `cuda_solve`, but these are intentionally unused on the filter hot paths —
+  covariances are small (≤~10×10), so a PCIe round-trip costs more than the
+  factorization. Reserved for a future large-matrix dispatch.
 - Bearing-Only tracking shows "divergences" due to inherently weak observability in
   early trajectory — filter eventually converges, not a code bug
 - All filters are float32-only; no double-precision template support in FilterMath
-- CUDA Blackwell (SM 100) requires CUDA 13+ (see Phase 5)
+- CUDA Blackwell requires CUDA 13.x and a `native`/SM 120 build (default arch list
+  stops at SM 90) — see Phase 7 and DEVELOPMENT_NOTES.md
 
 ## Status: PRODUCTION READY
 
 All critical issues resolved. Production-ready across all filter types and dimensions.
 
-**Active acceleration**: CUDA (SM 75–90) + Vulkan + OpenMP + Eigen (x86_64), NEON + SVE2 + Vulkan (ARM)
+**Active acceleration**: CUDA (SM 75–120, incl. Blackwell) + Vulkan + OpenMP + Eigen (x86_64), NEON + SVE2 + Vulkan (ARM)
 
-**Pending**: Blackwell (SM 100) CUDA support (requires CUDA 13+)
+**Compute kernels**: OptMathKernels pinned at release tag **v0.5.15**

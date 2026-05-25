@@ -1,6 +1,6 @@
 # SRUKF Implementation Status
 
-## Current State (v3.1.0, April 2026)
+## Current State (v3.2.0, May 2026)
 
 ### All Benchmark Problems Working
 
@@ -28,14 +28,16 @@ All 4 benchmark problems and all smoother variants pass successfully. 10D couple
 
 ## Technical Details
 
-### FilterMath Dispatch Layer (v3.1.0)
+### FilterMath Dispatch Layer
 All SRUKF linear algebra now routes through `Common/include/FilterMath.h`:
 - **GEMM**: CUDA cuBLAS → SVE2 cache-blocked → NEON → Eigen
 - **Cholesky**: NEON accelerated → Eigen LLT/LDLT fallback
 - **Kalman Gain**: SPD solve (O(n²)) instead of explicit inverse (O(n³))
 - **Cross-platform**: Non-ARM falls through to Eigen (or CUDA if available)
 
-> **Note**: CUDA backend active for SM 75–90 (CUDA 12.x). Blackwell SM 100 pending CUDA 13+. See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md).
+> **Note**: CUDA backend active for SM 75–120, including Blackwell RTX 50-series
+> (verified on RTX 5070 Ti / SM 120, CUDA 13.1). Compute kernels come from
+> OptMathKernels, pinned at release tag **v0.5.15**. See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md).
 
 ### Dimension-Adaptive Parameters
 ```cpp
