@@ -115,6 +115,9 @@ struct TrajectoryData {
     std::vector<State> smoothed_states;
     std::vector<Eigen::MatrixXf> filtered_covs;
     std::vector<Eigen::MatrixXf> smoothed_covs;
+    // Fixed-lag offset of the smoother: smoothed_states[i] is the smoothed
+    // estimate for time index (i - smoother_lag). 0 for filter-only runs.
+    int smoother_lag = 0;
 };
 
 /**
@@ -379,8 +382,19 @@ void save_trajectory_csv(const std::string& filename,
             file << "," << data.filtered_states[i](j);
         }
         if (!data.smoothed_states.empty()) {
-            for (int j = 0; j < state_dim; ++j) {
-                file << "," << data.smoothed_states[i](j);
+            // smoothed_states[k] is the estimate for time index (k - smoother_lag),
+            // so the smoothed estimate aligned to row i lives at index i + lag.
+            // The final `lag` rows have no smoothed estimate yet: emit empty fields
+            // (parsed as NaN) instead of the spurious pre-warmup zeros.
+            size_t s_idx = i + static_cast<size_t>(data.smoother_lag);
+            if (s_idx < data.smoothed_states.size()) {
+                for (int j = 0; j < state_dim; ++j) {
+                    file << "," << data.smoothed_states[s_idx](j);
+                }
+            } else {
+                for (int j = 0; j < state_dim; ++j) {
+                    file << ",";
+                }
             }
         }
         file << std::endl;

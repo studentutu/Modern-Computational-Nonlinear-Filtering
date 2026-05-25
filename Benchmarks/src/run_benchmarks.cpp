@@ -230,6 +230,7 @@ BenchmarkMetrics run_ukf_smoother_benchmark(Model& model,
     metrics.filter_name = "UKF+Smoother";
     metrics.problem_name = problem_name;
 
+    data.smoother_lag = lag;
     UKFCore::UnscentedFixedLagSmoother<NX, NY> smoother(model, lag);
     smoother.initialize(x0, P0);
 
@@ -300,6 +301,7 @@ BenchmarkMetrics run_srukf_smoother_benchmark(Model& model,
     metrics.filter_name = "SRUKF+Smoother";
     metrics.problem_name = problem_name;
 
+    data.smoother_lag = lag;
     UKFCore::SRUKFFixedLagSmoother<NX, NY> smoother(model, lag);
     smoother.initialize(x0, P0);
 
