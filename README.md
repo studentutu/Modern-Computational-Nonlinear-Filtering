@@ -144,8 +144,8 @@ Consolidated metrics from the latest run (`benchmark_results.csv`):
 
 | Problem | Filter | RMSE | Smoothed RMSE | NEES median | In 95% | Avg step | Total | Div |
 |---------|--------|-----:|--------------:|------------:|-------:|---------:|------:|----:|
-| Coupled Osc 10D | UKF | 1.457 | — | 9.89 | 94.5% | 0.0081 ms | 41.1 ms | 0 |
-| Coupled Osc 10D | SRUKF | 1.457 | — | 9.89 | 94.5% | 0.0081 ms | 41.3 ms | 0 |
+| Coupled Osc 10D | UKF | 1.457 | — | 9.89 | 94.5% | 0.0076 ms | 38.2 ms | 0 |
+| Coupled Osc 10D | SRUKF | 1.457 | — | 9.89 | 94.5% | 0.0082 ms | 41.5 ms | 0 |
 | Coupled Osc 10D | UKF+Smoother | 1.457 | **1.148** | 9.89 | 94.5% | 0.0275 ms | 138.0 ms | 0 |
 | Coupled Osc 10D | SRUKF+Smoother | 1.457 | **1.148** | 9.89 | 94.5% | 0.0400 ms | 201.1 ms | 0 |
 | Van der Pol 2D | UKF | 0.468 | — | 1.14 | 95.9% | 0.00039 ms | 0.81 ms | 0 |
