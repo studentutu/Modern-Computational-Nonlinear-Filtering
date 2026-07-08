@@ -4,14 +4,20 @@ This directory contains challenging benchmark problems and a comprehensive testi
 
 ## Overview
 
-The benchmark suite tests filtering methods on increasingly difficult problems with:
-- **High dimensionality** (up to 40 states)
+The default suite (`run_benchmarks`) runs **four** problems — Coupled Oscillators
+(10D), Van der Pol (2D), Bearing-Only (4D), and Reentry Vehicle (6D) — exercising:
+- **High dimensionality** (up to 10 states in the default suite)
 - **Strong nonlinearity**
-- **Chaotic dynamics**
-- **Partial observability**
+- **Partial / weak observability**
 - **Discontinuous forcing**
+- **Highly nonlinear observations** (spherical range/az/el)
 
-## Benchmark Problems
+> A 40-state chaotic **Lorenz96** model is also provided in
+> `include/BenchmarkProblems.h` for high-dimensional experimentation, but it is
+> **not part of the default run** (`run_benchmarks` instantiates the four problems
+> above). See "Extending the Benchmarks" to add it to the runner.
+
+## Benchmark Problems (default suite)
 
 ### 1. Coupled Oscillators (10D)
 - **State dimension**: 10 (5 oscillators, position + velocity each)
@@ -22,16 +28,7 @@ The benchmark suite tests filtering methods on increasingly difficult problems w
   - Nonlinear observation function: `y = pos + 0.1*sin(pos)`
 - **Difficulty**: Medium-High (high dimensional, coupled nonlinear dynamics)
 
-### 2. Lorenz96 Model (40D)
-- **State dimension**: 40
-- **Observation dimension**: 10 (observe every 4th variable)
-- **Characteristics**:
-  - Highly chaotic (used in weather prediction)
-  - Spatial coupling structure
-  - Forcing parameter F=8 (chaotic regime)
-- **Difficulty**: Very High (chaotic, high dimensional, sparse observations)
-
-### 3. Van der Pol with Discontinuous Forcing (2D)
+### 2. Van der Pol with Discontinuous Forcing (2D)
 - **State dimension**: 2
 - **Observation dimension**: 1
 - **Characteristics**:
@@ -40,7 +37,7 @@ The benchmark suite tests filtering methods on increasingly difficult problems w
   - Quadratic measurement nonlinearity
 - **Difficulty**: Medium (low dimensional but highly stiff and discontinuous)
 
-### 4. Reentry Vehicle Tracking (6D)
+### 3. Reentry Vehicle Tracking (6D)
 - **State dimension**: 6 (position + velocity in 3D)
 - **Observation dimension**: 3 (range, azimuth, elevation)
 - **Characteristics**:
@@ -50,7 +47,7 @@ The benchmark suite tests filtering methods on increasingly difficult problems w
   - Gravity model
 - **Difficulty**: High (highly nonlinear observations and dynamics)
 
-### 5. Bearing-Only Tracking (4D)
+### 4. Bearing-Only Tracking (4D)
 - **State dimension**: 4 (2D position + velocity)
 - **Observation dimension**: 1 (bearing angle only)
 - **Characteristics**:
@@ -175,11 +172,6 @@ This generates:
 - **2-3x computational cost** due to backward pass
 
 ### Problem-Specific Insights
-
-#### Lorenz96 (40D Chaos)
-- Filters may diverge due to chaos
-- Frequent resampling/reinitialization may be needed
-- High NEES values expected
 
 #### Bearing-Only Tracking
 - Large initial error due to weak observability
