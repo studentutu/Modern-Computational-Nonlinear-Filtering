@@ -49,14 +49,15 @@ public:
      */
     void initialize(const State& x0, const StateMat& P0) {
         x_ = x0;
-        // Dimension-adaptive parameters for SRUKF
-        // Low/medium dimensions: alpha=1.0 for better weak observability handling
-        // High dimensions: alpha=1e-3 to prevent numerical issues
+        // Dimension-adaptive parameters for SRUKF (alpha=1.0 in both regimes; the
+        // earlier alpha=1e-3 for high NX was removed in the audit because it made
+        // Wm(0)/Wc(0) hugely negative and destabilized the 10D coupled-oscillator
+        // case). Only kappa varies with dimension.
         if (kappa < 0) {
             beta = 2.0f;  // Optimal for Gaussian
             if (NX <= 5) {
                 alpha = 1.0f;
-                kappa = 3.0f - static_cast<float>(NX);
+                kappa = 3.0f - static_cast<float>(NX);  // classic n+kappa = 3
             } else {
                 alpha = 1.0f;
                 kappa = 0.0f;
@@ -358,7 +359,7 @@ public:
         // Gate the innovation to prevent catastrophic updates from outliers
         Eigen::Matrix<float, NY, 1> temp_innov = S_yy.template triangularView<Eigen::Lower>().solve(innovation);
         float mahal_dist_sq = temp_innov.squaredNorm();
-        float gate_threshold = 25.0f;  // Chi-squared threshold (larger to allow GPS)
+        float gate_threshold = 25.0f;  // Chi-squared gate on Mahalanobis distance
 
         float scale = 1.0f;
         if (mahal_dist_sq > gate_threshold) {
@@ -371,8 +372,15 @@ public:
 
         // 8. Covariance Update using square root form
         // P = P - K*S_yy*S_yy^T*K^T = S*S^T - K*S_yy*S_yy^T*K^T
-        // Use QR to compute: [S^T, (K*S_yy)^T]^T and extract updated S
-        Eigen::Matrix<float, NX, NY> U = K * S_yy;
+        // When the innovation is gated (scale < 1) an effective gain s*K is applied,
+        // so the *consistent* covariance reduction (Joseph form, Pxy = K*S_yy*S_yy^T)
+        // is (2s - s^2)*K*S_yy*S_yy^T*K^T, not the full reduction. Scaling the
+        // downdate vectors by sqrt(2s - s^2) enforces that: it equals 1 when s == 1
+        // (no change to the normal path) and stays in [0,1) when gated, so the
+        // covariance is not made over-confident relative to the applied correction.
+        // The factor is 1 - (1 - s)^2 >= 0, so the downdate remains PSD-safe.
+        const float downdate_scale = std::sqrt(std::max(0.0f, 2.0f * scale - scale * scale));
+        Eigen::Matrix<float, NX, NY> U = downdate_scale * (K * S_yy);
 
         // Try rank-1 downdates, but detect if they fail
         StateMat S_updated = S_;
