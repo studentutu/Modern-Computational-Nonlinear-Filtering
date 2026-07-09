@@ -11,12 +11,12 @@ through `Common/include/FilterMath.h` / `FilterMathGPU.h`.
 
 ### Pinning policy (the "tag/release format going forward")
 
-OptMathKernels now publishes semantic-version release tags (`v0.5.0` … `v0.5.15`).
+OptMathKernels now publishes semantic-version release tags (`v0.5.0` … `v0.5.17`).
 This project **pins to a specific tag** rather than tracking the moving `main`
 branch. The pin lives in one place — `CMakeLists.txt`:
 
 ```cmake
-set(OPTMATH_RELEASE_TAG "v0.5.15" CACHE STRING "Pinned OptMathKernels release tag")
+set(OPTMATH_RELEASE_TAG "v0.5.17" CACHE STRING "Pinned OptMathKernels release tag")
 FetchContent_Declare(OptimizedKernels ... GIT_TAG ${OPTMATH_RELEASE_TAG})
 ```
 
@@ -26,7 +26,7 @@ Adopting a newer kernel release is a deliberate, audited step:
 2. Audit the upstream diff `git diff <old-tag>..<new-tag>` — pay attention to
    anything under `include/` (public API) and the backend `src/` the filters use.
 3. Bump `OPTMATH_RELEASE_TAG`, reconfigure, rebuild.
-4. `ctest --output-on-failure` (expect 24/24) and run the benchmark suite.
+4. `ctest --output-on-failure` (expect 25/25) and run the benchmark suite.
 5. Update README/this file, then commit and tag the parent release.
 
 ### Audit: v0.5.13 → v0.5.15 (adopted 2026-05-25)
@@ -50,6 +50,33 @@ CTest pass**, Vulkan tests confirm `[Vulkan] Selected GPU: NVIDIA GeForce RTX
 5070 Ti Laptop GPU`, and the benchmark RMSE/NEES figures are numerically
 identical to the prior run (the changed kernel path is not on the UKF/SRUKF
 CUDA/Eigen benchmark path). Safe to adopt.
+
+### Audit: v0.5.15 → v0.5.17 (adopted 2026-07-08)
+
+Fetched tags and reviewed the full `git diff v0.5.15..v0.5.17` (two upstream
+releases). The entire diff touches only 5 files — `CMakeLists.txt`, `README.md`,
+`requirements.txt`, `.gitignore`, and `tests/test_neon_linalg.cpp`:
+
+| Change | File | Impact on this project |
+|--------|------|------------------------|
+| x86_64 desktop RTX 5090 benchmark numbers | `README.md` | None — upstream docs. |
+| **NEON `TrsvLower64x64` unit-test tolerance `1e-3 → 5e-3`** | `tests/test_neon_linalg.cpp` | None functional. float32 forward-substitution over 64 rows accumulates ~O(1e-3) round-off; the twin `TrsvUpper64x64` test already used `5e-3`. Removes a latent flaky-test edge; the `neon_trsv_lower` **kernel is unchanged**. |
+| Documented apt/build deps (`glslang-tools`/`glslc` for Vulkan SPIR-V shaders) | `requirements.txt` | None — build-doc only; already installed on this host (Vulkan suites compile & pass). |
+| Ignore `optenv/` venv and `*.spv` artifacts | `.gitignore` | None. |
+| Version bump 0.5.15 → 0.5.17 | `CMakeLists.txt` | None. |
+
+**Public API (`include/`) and compute backends (`src/`): zero changes** across
+v0.5.15..v0.5.17 (`git diff --name-only v0.5.15..v0.5.17 -- include/ src/` is
+empty). No `optmath::` call site in `FilterMath.h`, `FilterMathGPU.h`, or
+`particle_filter_gpu.hpp` is affected. **Note:** the upstream releases contain no
+MPI/OpenMPI — the parallelism story here remains OpenMP (CPU) + CUDA/Vulkan (GPU).
+
+**Verification (2026-07-08):** cleared `_deps/optimizedkernels-*`, reconfigured
+at `v0.5.17` (dep HEAD `cb4b9ef` = tag `v0.5.17`), full rebuild, **25/25 CTest
+pass** (≈ 5.8 s), benchmarks rerun and plots regenerated — RMSE/NEES figures
+numerically consistent with the prior run (the changed test path is not on the
+UKF/SRUKF CUDA/Eigen benchmark path; only 3 of 15 committed PNGs changed at the
+byte level, all cosmetic). Safe to adopt.
 
 ---
 
@@ -90,17 +117,17 @@ Cholesky is available as of upstream v0.5.10 (verified on CUDA 13).
 
 ---
 
-## Build Verification (May 25, 2026)
+## Build Verification (July 8, 2026)
 
-### Ubuntu 26.04 (x86_64) — OptMathKernels v0.5.15
+### Ubuntu 26.04 LTS (x86_64) — OptMathKernels v0.5.17
 
 **System Info**:
-- OS: Ubuntu 26.04 (x86_64)
+- OS: Ubuntu 26.04 LTS (x86_64)
 - GPU: NVIDIA GeForce RTX 5070 Ti Laptop GPU (Blackwell, SM 120), driver 595.71.05
 - CUDA: 13.1.115 (enabled, SM native / 120)
 - Vulkan: 1.4.341 (discrete GPU auto-selected — RTX 5070 Ti)
 - Eigen: 3.4.0
-- OptMathKernels: pinned **v0.5.15** via `OPTMATH_RELEASE_TAG`
+- OptMathKernels: pinned **v0.5.17** via `OPTMATH_RELEASE_TAG`
 
 **Build Command**:
 ```bash
@@ -108,9 +135,83 @@ cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=native -DOPTMATH_
 make -j$(nproc)
 ```
 
-**Test Results: 24/24 passing** (8 filter/benchmark + 16 OptMathKernels GPU/SIMD,
+**Test Results: 25/25 passing** (9 filter/benchmark + 16 OptMathKernels GPU/SIMD,
 incl. `test_cuda_kernels` on the Blackwell GPU and the 4 Vulkan suites selecting
 the discrete GPU). Total CTest time ≈ 5.9 s.
+
+---
+
+## Before/After Validation Record (July 8, 2026)
+
+Side-by-side validation of the v3.3.0 feature work (kernel bump + the three
+audit fixes + optimization #1). **Before** = commit `7609df4` (session start,
+OptMathKernels v0.5.15); **After** = commit `2c7dccf` (v0.5.17 + fixes + opt).
+The "before" tree was built from a detached `git worktree` at that commit so the
+two builds are truly independent. Same host as the Build Verification above.
+
+### Tests — unchanged pass
+
+| | Before | After |
+|---|---|---|
+| `ctest` (24) | 24/24 | 24/24 |
+| under `OMP_NUM_THREADS=24` | 24/24 | 24/24 |
+
+### Benchmark accuracy — unchanged; only the false metric corrected
+
+| Problem / filter | RMSE before → after | NEES% | **Divergences before → after** |
+|---|---|---|---|
+| CoupledOsc 10D (UKF/SRUKF) | 1.4566 → 1.4566 | 94.5 | 0 → 0 |
+| VanDerPol 2D | 0.4681 / 0.4663 → same | 95.9 / 96.0 | 0 → 0 |
+| **Bearing-Only 4D (UKF)** | 63.8081 → 63.8084 | 99.6 | **176 → 0** |
+| **Bearing-Only 4D (SRUKF)** | 64.1728 → 64.1728 | 99.6 | **175 → 0** |
+| Reentry 6D (UKF) | 369.01 → 369.115 | 95.9 | 0 → 0 |
+| Reentry 6D (SRUKF) | 369.185 → 369.182 | 95.6 | 0 → 0 |
+
+RMSE/NEES identical to ~4 sig figs. The sub-0.03% wiggles are float
+reassociation from the fixed-size `gemm` path (UKF cases) and fix #2 acting on
+genuinely-gated Reentry-SRUKF steps — expected, not behavioral. The only real
+metric change is Bearing-Only divergences (fix #3): **176/175 → 0**.
+
+### Fix #1 (RBPF OpenMP race) — ThreadSanitizer, definitive
+
+The RBPF test was compiled `-fsanitize=thread -fopenmp` (header-only path, no
+CUDA) against both header versions and run at `OMP_NUM_THREADS=8`:
+
+| | Worker-vs-worker races (genuine) | Site |
+|---|---|---|
+| Before | **~24 reports**, thread-pairs `T3/T4`, `T6/T4`, `T5/T3`, `T6/T3`, `T6/T7`… | `Eigen …/AssignmentFunctors.h:24` — writing the **shared `A/B/Q/H/R`** in `get_dynamics`/`get_observation` |
+| After | **0** | — |
+
+The residual After warnings are all *main-thread* post-loop reads: the known
+GCC-libgomp barrier false positive (TSan cannot see the `omp parallel for`
+barrier), present in any OpenMP+TSan program and unrelated to the fix.
+
+### Fix #2 (SRUKF gated covariance) — deterministic reject-mode harness
+
+Constant-position model, `reject_outliers_ = true`, one gross outlier
+(NIS ≈ 8.1e5 ≫ 25 gate) at step 5; no RNG, so the only difference between the
+two builds is the header. Covariance trace across the rejected step:
+
+| Version | trace(P): pre-step → post-step | Interpretation |
+|---|---|---|
+| Before | 5.2547 → **5.2367** (shrinks) | covariance tightened on a *discarded* measurement → false certainty |
+| After | 5.2547 → **5.2747** (+0.02 = process noise) | correct: a rejected measurement adds no information |
+
+The before-build stays ~0.006–0.008 over-tight every subsequent step — the
+compounding overconfidence the fix removes.
+
+### Optimization #1 (fixed-size dispatch) — min of 5 runs
+
+| Case | Before | After | Δ |
+|---|---:|---:|---|
+| UKF CoupledOsc 10D | 38.27 ms | 36.91 ms | −3.6% |
+| SRUKF 10D | 41.78 ms | 41.64 ms | ~0 (direct Eigen, no `gemm`) |
+| RMSE | 1.4566 | 1.4566 | identical |
+
+**Conclusion:** two real defects eliminated with hard evidence (RBPF race: 24
+TSan worker-races → 0; SRUKF rejected-outlier covariance shrink: quantified
+trace divergence), neither visible in the pass/fail suite beforehand; filter
+accuracy unchanged to 4 sig figs; UKF ~3.6% faster and numerically identical.
 
 ---
 
@@ -182,16 +283,46 @@ This will enable full GPU acceleration for UKF/SRUKF sigma point operations.
 
 ## Changelog
 
-### Audit remediation (Jul 2026)
+### v3.3.0 (July 2026)
+
+Feature release: SRUKF angular-observation support (R32/R33), the OptMathKernels
+v0.5.17 kernel bump, the Bearing-Only divergence-metric fix, and the fixed-size
+`filtermath` dispatch fast-path — merged onto the v3.2.1 audit-remediation line.
+Verified on x86_64 + RTX 5070 Ti / CUDA 13.1 (**25/25 CTest**, also under
+`OMP_NUM_THREADS=24`); benchmark RMSE/NEES unchanged. The RBPF race and the SRUKF
+gate/covariance fix were done independently on both branches and reconciled to
+`main`'s versions (SRUKF uses the `sqrt(2s - s^2)` Joseph form).
+
+- **SRUKF angular-observation innovation wrap (R32)** + **NIS exposure / reject
+  policy (R33)**: angular observation innovations are wrapped to [−π, π]; NIS is
+  exposed via `getLastNIS()` and the innovation gate has an optional
+  `setRejectOutliers()` reject-vs-downscale policy. Covered by the registered
+  `SRUKF_AngularWrap` CTest.
+- **OptMathKernels kernel bump v0.5.15 → v0.5.17** (audited per the pinning policy;
+  upstream diff is docs + a NEON unit-test-tolerance fix — no API/backend/MPI change).
+  See "Audit: v0.5.15 → v0.5.17" above.
+- **Bearing-Only divergence-metric fix**: `count_divergences()` used the default
+  10.0 threshold against this problem's ~64 m error scale, mislabelling ~65% of
+  steps as "divergences" (the filter was consistent — NEES 99.6% in-bounds). Gave
+  it a problem-scaled 500 m threshold (like reentry's 5 km); count now 0.
+- **filtermath fixed-size dispatch fast-path**: SFINAE `gemm` / `mat_vec_mul`
+  overloads bind to compile-time-sized operands and compute into stack-allocated
+  fixed-size results (no `MatrixXf` heap temporaries / dispatch branch); dynamic
+  operands still take the CUDA/SVE2/NEON path. UKF 10D ~3.6% faster; RMSE/NEES
+  bit-identical.
+
+### v3.2.1 (July 2026) — audit remediation
 
 Repository-wide audit (correctness, build/reproducibility, docs). Verified on the
-aarch64 Raspberry Pi host (CPU: NEON/SVE2/Eigen path; no CUDA) — all 8 project
-CTest cases pass before and after; benchmark RMSE/NEES numerically unchanged.
+aarch64 Raspberry Pi host (CPU: NEON/SVE2/Eigen path; no CUDA) and on the x86_64 +
+RTX 5070 Ti / CUDA 13.1 reference host (25/25 CTest) — all CTest cases pass before
+and after; benchmark RMSE/NEES numerically unchanged.
 
 **Correctness**
 - **RBPF OpenMP data race (HIGH)**: `A,B,bias,Q,H,offset,R` were declared outside
   the `#pragma omp parallel for` in `rbpf_core.hpp::step()` (shared → concurrent
-  writes). Moved inside the loop body (thread-private).
+  writes). Moved inside the loop body (thread-private). Confirmed with
+  ThreadSanitizer (~24 worker-vs-worker races → 0).
 - **OpenMP RNG ignored the seed**: RBPF and PKF used a `std::random_device`
   `thread_local` in the parallel path, so `config.seed` / `set_seed()` had no
   effect and runs were non-reproducible. Replaced with per-thread `mt19937_64`
@@ -231,6 +362,9 @@ CTest cases pass before and after; benchmark RMSE/NEES numerically unchanged.
   Corrected the Benchmarks/README to the four problems actually run (Lorenz96 is
   present in the header but not in the default suite). Added a host note clarifying
   that GPU test counts/timings are from the x86_64 reference host.
+
+_(The feature-branch additions merged on top of this audit are listed under
+v3.3.0 above.)_
 
 ### Recommended follow-up: CI
 

@@ -329,6 +329,15 @@ public:
         Eigen::Matrix<float, NY, NSIG> Dy;
         for (int i = 0; i < NSIG; ++i) {
             Dy.col(i) = Y_pred.col(i) - y_hat;
+            // Wrap angular OBSERVATION deviations to [-π, π] (R32): for an
+            // angular observable a raw (Y - y_hat) can straddle the ±π branch
+            // cut.  Mirrors the angular state-difference wrap just below.
+            for (int j = 0; j < NY; ++j) {
+                if (model_.isAngularObservation(j)) {
+                    while (Dy(j, i) >  M_PI) Dy(j, i) -= 2.0f * M_PI;
+                    while (Dy(j, i) < -M_PI) Dy(j, i) += 2.0f * M_PI;
+                }
+            }
             State diff_x = sigmas.X.col(i) - x_;
             // Wrap angular state differences to [-π, π]
             for (int j = 0; j < NX; ++j) {
@@ -355,16 +364,34 @@ public:
 
         // 7. State Update with innovation gating
         Observation innovation = y_k - y_hat;
+        // Wrap angular OBSERVATION innovations to [-π, π] (R32): for an angular
+        // observable (e.g. an interferometer cone angle) a raw (y_k - y_hat)
+        // straddling the ±π branch cut would read ~2π instead of ~0 and inject
+        // a catastrophic correction.  No-op for non-angular observations.
+        for (int j = 0; j < NY; ++j) {
+            if (model_.isAngularObservation(j)) {
+                while (innovation(j) >  M_PI) innovation(j) -= 2.0f * M_PI;
+                while (innovation(j) < -M_PI) innovation(j) += 2.0f * M_PI;
+            }
+        }
 
-        // Gate the innovation to prevent catastrophic updates from outliers
+        // Gate the innovation to prevent catastrophic updates from outliers.
+        // mahal_dist_sq = innovᵀ (S_yy S_yyᵀ)⁻¹ innov is the normalized innovation
+        // squared (NIS) -- the rigorous consistency statistic (NOT an R-only
+        // approximation) -- stored in last_nis_ for monitoring (R33).
         Eigen::Matrix<float, NY, 1> temp_innov = S_yy.template triangularView<Eigen::Lower>().solve(innovation);
         float mahal_dist_sq = temp_innov.squaredNorm();
-        float gate_threshold = 25.0f;  // Chi-squared gate on Mahalanobis distance
+        last_nis_ = mahal_dist_sq;     // expose NIS for monitoring (R33)
+        float gate_threshold = 25.0f;  // Chi-squared gate on Mahalanobis distance (NIS)
 
         float scale = 1.0f;
         if (mahal_dist_sq > gate_threshold) {
-            // Scale down large corrections
-            scale = std::sqrt(gate_threshold / mahal_dist_sq);
+            ++gated_count_;
+            // R33: optionally REJECT the outlier (zero correction) instead of
+            // down-scaling it; default (reject_outliers_ = false) preserves the
+            // original down-scaling behaviour.
+            scale = reject_outliers_ ? 0.0f
+                                     : std::sqrt(gate_threshold / mahal_dist_sq);
         }
 
         State correction = scale * (K * innovation);
@@ -372,13 +399,21 @@ public:
 
         // 8. Covariance Update using square root form
         // P = P - K*S_yy*S_yy^T*K^T = S*S^T - K*S_yy*S_yy^T*K^T
-        // When the innovation is gated (scale < 1) an effective gain s*K is applied,
-        // so the *consistent* covariance reduction (Joseph form, Pxy = K*S_yy*S_yy^T)
-        // is (2s - s^2)*K*S_yy*S_yy^T*K^T, not the full reduction. Scaling the
-        // downdate vectors by sqrt(2s - s^2) enforces that: it equals 1 when s == 1
-        // (no change to the normal path) and stays in [0,1) when gated, so the
-        // covariance is not made over-confident relative to the applied correction.
-        // The factor is 1 - (1 - s)^2 >= 0, so the downdate remains PSD-safe.
+        // Use QR to compute: [S^T, (K*S_yy)^T]^T and extract updated S
+        //
+        // The downdate MUST stay consistent with the gated state correction
+        // (R33), which applies an effective gain `scale*K`. The Joseph form for a
+        // suboptimal gain s*K,
+        //     P+ = (I - sKH) P (I - sKH)^T + s^2 K R K^T,
+        // reduces to  P+ = P - (2s - s^2) * K*P_yy*K^T  (using K*P_yy*K^T = KHP).
+        // So the consistent square-root downdate scales each column of K*S_yy by
+        //     downdate_scale = sqrt(2s - s^2)   (=> U*U^T = (2s - s^2)*K*P_yy*K^T).
+        // Endpoints: s=1 -> full update (2s-s^2 = 1); s=0 (rejected outlier) ->
+        // zero downdate, so a discarded measurement never shrinks the covariance
+        // into false certainty. NOTE: a plain `scale` here (an s^2 reduction) is
+        // NOT Joseph-consistent for a partial (0<s<1) update and leaves the
+        // covariance over-conservative — use 2s - s^2. The factor 2s - s^2 =
+        // 1 - (1 - s)^2 >= 0, so the downdate also stays PSD-safe.
         const float downdate_scale = std::sqrt(std::max(0.0f, 2.0f * scale - scale * scale));
         Eigen::Matrix<float, NX, NY> U = downdate_scale * (K * S_yy);
 
@@ -393,7 +428,7 @@ public:
             // Fallback: compute P directly and take Cholesky
             // P_new = P - K * P_yy * K^T = S*S^T - K*S_yy*S_yy^T*K^T
             StateMat P_curr = S_ * S_.transpose();
-            StateMat KPyyKT = U * U.transpose();  // U = K*S_yy, so U*U^T = K*S_yy*S_yy^T*K^T
+            StateMat KPyyKT = U * U.transpose();  // U = sqrt(2s-s^2)*K*S_yy, so U*U^T = (2s-s^2)*K*S_yy*S_yy^T*K^T (Joseph partial-update, consistent with the gated state correction)
             StateMat P_new = P_curr - KPyyKT;
 
             // Ensure positive definiteness
@@ -443,10 +478,23 @@ public:
     void setState(const State& x) { x_ = x; }
     void setSqrtCovariance(const StateMat& S) { S_ = S; }
 
+    // --- Consistency monitoring & outlier policy (R33) ---
+    // last_nis_ is the normalized innovation squared (NIS) from the most recent
+    // update() -- the rigorous chi-squared statistic, not an R-only proxy.
+    float getLastNIS() const { return last_nis_; }
+    // Count of updates whose NIS exceeded the gate (scaled or rejected).
+    unsigned getGatedCount() const { return gated_count_; }
+    // When true, a gated outlier is REJECTED (zero correction) rather than
+    // down-scaled.  Default false preserves the original behaviour.
+    void setRejectOutliers(bool reject) { reject_outliers_ = reject; }
+
 private:
     Model& model_;
     State x_;
     StateMat S_;  // Square root of covariance (Cholesky factor)
+    float last_nis_ = 0.0f;         // NIS from the most recent update (R33)
+    unsigned gated_count_ = 0;      // count of gated/rejected updates (R33)
+    bool reject_outliers_ = false;  // reject (vs down-scale) gated outliers (R33)
 
     /**
      * Rank-1 Cholesky update: S_new such that

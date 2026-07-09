@@ -38,7 +38,7 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 - **5 Filtering Methods**: EKF, UKF, SRUKF, PKF, RBPKF
 - **Fixed-Lag Smoothers**: Rauch-Tung-Striebel (RTS) backward pass and ancestry-based smoothing
 - **Comprehensive Benchmarks**: 4 challenging test problems with full metrics (10D coupled oscillators, Van der Pol, bearing-only tracking, reentry vehicle)
-- **Hardware Acceleration**: NEON dense linear algebra + Vulkan particle operations + CUDA GPU acceleration via [OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA) (OptMathKernels), pinned to release tag **[v0.5.15](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.15)**
+- **Hardware Acceleration**: NEON dense linear algebra + Vulkan particle operations + CUDA GPU acceleration via [OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA) (OptMathKernels), pinned to release tag **[v0.5.17](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.17)**
 
 ### Platform Support
 
@@ -115,11 +115,11 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 
 Four challenging problems tested with UKF, SRUKF, and fixed-lag smoothers. Benchmarks run through the FilterMath dispatch layer (CUDA cuBLAS / SVE2 / NEON / Eigen, selected at runtime by platform).
 
-> **Latest run**: 25 May 2026 on **Ubuntu 26.04 x86_64**, **NVIDIA GeForce RTX 5070 Ti (Blackwell, SM 120)** with **CUDA 13.1**, Eigen 3.4, Vulkan 1.4, against **OptMathKernels v0.5.15** (pinned release tag). All **24/24** CTest cases pass (8 filter tests + 16 OptimizedKernels GPU/SIMD tests, including the CUDA kernel suite on the Blackwell GPU and the Vulkan suites, which now auto-select the discrete RTX 5070 Ti).
+> **Latest run**: 8 July 2026 on **Ubuntu 26.04 LTS x86_64**, **NVIDIA GeForce RTX 5070 Ti Laptop GPU (Blackwell, SM 120)** with **CUDA 13.1**, Eigen 3.4, Vulkan 1.4, against **OptMathKernels v0.5.17** (pinned release tag). All **25/25** CTest cases pass (9 filter tests + 16 OptimizedKernels GPU/SIMD tests, including the CUDA kernel suite on the Blackwell GPU and the Vulkan suites, which now auto-select the discrete RTX 5070 Ti).
 
 > **Host note**: the **RMSE / NEES / divergence** figures are backend-independent
 > and reproduce on any platform (the FilterMath dispatch selects CUDA / SVE2 /
-> NEON / Eigen but computes the same result). The **24/24** count and the wall-clock
+> NEON / Eigen but computes the same result). The **25/25** count and the wall-clock
 > **timings** are specific to that x86_64 + CUDA reference host: a CPU-only or ARM
 > host runs the Eigen/NEON path (no CUDA suite; the count and per-step times differ)
 > and still reproduces the accuracy numbers. Build and CTest are exercised on ARM
@@ -182,7 +182,7 @@ Classic relaxation oscillator: slow drift in `x0` with sharp limit-cycle transit
 
 ![Bearing-only trajectories](docs/images/bearing_srukf_smooth_plot.png)
 
-Weak-observability problem: angle-only measurements barely constrain range, so estimates track well for ~15 s then drift (visible divergence in all four states). Smoothing improves RMSE by **19%** (64.17 → 52.03) but cannot fully recover the lost range. The high "divergence" count (~175) reflects inherent observability limits during the early trajectory, not filter instability — NEES stays at 99.6% in-bounds throughout.
+Weak-observability problem: angle-only measurements barely constrain range, so the range estimate drifts (large steady-state RMSE ~64) even though the filter stays statistically consistent — NEES holds at **99.6% in-bounds** throughout. Smoothing improves RMSE by **19%** (64.17 → 52.03) but cannot fully recover the lost range. (Earlier runs reported a spurious ~175 "divergence" count here; that was a benchmark-metric bug — a fixed 10 m error threshold measured against this problem's ~64 m error scale — corrected in v3.3.0 with a problem-scaled 500 m threshold, so the divergence count is now **0**. The filter never actually diverged; NEES was in-bounds the whole time.)
 
 ### Reentry Vehicle (6D State, 3D Observation)
 
@@ -409,7 +409,7 @@ Before deploying any Kalman filter, verify:
 - **Eigen3**: Linear algebra (3.4+, fetched automatically if not found)
 - **CMake**: Build system (3.14+)
 - **Python 3**: (3.10+) For visualization scripts; a virtual environment is created automatically during the build
-- **[OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)** (OptMathKernels): NEON/SVE2/Vulkan/CUDA acceleration, fetched automatically via FetchContent from the public GitHub URL (override with `-DOPTMATH_REPO=<local-path>` for offline builds). **Pinned to a release tag** for reproducible builds — see `OPTMATH_RELEASE_TAG` in the root `CMakeLists.txt` (currently **v0.5.15**). Bumping it is a deliberate, audited step; see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) → *OptMathKernels Release Audit & Pinning Policy*.
+- **[OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)** (OptMathKernels): NEON/SVE2/Vulkan/CUDA acceleration, fetched automatically via FetchContent from the public GitHub URL (override with `-DOPTMATH_REPO=<local-path>` for offline builds). **Pinned to a release tag** for reproducible builds — see `OPTMATH_RELEASE_TAG` in the root `CMakeLists.txt` (currently **v0.5.17**). Bumping it is a deliberate, audited step; see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) → *OptMathKernels Release Audit & Pinning Policy*.
 
 ### Optional
 
@@ -530,7 +530,7 @@ python3 ../scripts/plot_benchmarks.py .
 | `-DOPTMATH_CUDA_NATIVE=ON` | Make the OptimizedKernels dependency honor `native` instead of its default multi-arch list |
 | `-DOPTMATH_REPO=<url-or-path>` | OptMathKernels source (default: public GitHub URL). Set to a local clone path for offline builds |
 | `-DNLF_BUILD_PYTHON_VENV=OFF` | Skip creating the plotting Python venv (the C++ build then needs no Python/PyPI — for offline/CI) |
-| `-DOPTMATH_RELEASE_TAG=v0.5.15` | OptMathKernels release tag to fetch/pin (default `v0.5.15`). Bump only after auditing the upstream diff — see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) |
+| `-DOPTMATH_RELEASE_TAG=v0.5.17` | OptMathKernels release tag to fetch/pin (default `v0.5.17`). Bump only after auditing the upstream diff — see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) |
 | `-DCMAKE_BUILD_TYPE=Release` | Optimized build with `-O3 -march=native` (forwarded to nvcc's host compiler via `-Xcompiler` for ABI consistency) |
 | `-DCMAKE_BUILD_TYPE=Debug` | Debug build with symbols |
 
@@ -787,7 +787,7 @@ MIT License - see LICENSE file for details.
 
 ---
 
-**Version**: 3.2.0
-**Last Updated**: 25 May 2026
-**OptMathKernels**: pinned to release tag [v0.5.15](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.15)
+**Version**: 3.3.0
+**Last Updated**: 8 July 2026
+**OptMathKernels**: pinned to release tag [v0.5.17](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.17)
 **Platform**: ARM aarch64 (Raspberry Pi 5, Orange Pi 5/6) + x86_64 (Vulkan + CUDA + Eigen) + NVIDIA GPU (SM 75–120 via CUDA 12.x/13.x; Blackwell RTX 50-series verified on SM 120 / CUDA 13.1)

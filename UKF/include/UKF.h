@@ -135,9 +135,11 @@ public:
         // -K*S*K^T), but written with the cross terms it is symmetric by
         // construction and rounding partially cancels — the same PSD-preserving
         // intent as the EKF/RBPF Joseph updates, without needing an explicit H.
-        Eigen::MatrixXf KS   = filtermath::gemm(K, S);
-        Eigen::MatrixXf KSKt = filtermath::gemm(KS, K.transpose());
-        Eigen::MatrixXf KPxyT = filtermath::gemm(K, Eigen::MatrixXf(Pxy.transpose()));
+        // Fixed-size types (NX/NY known at compile time) keep every gemm on
+        // FilterMath.h's compile-time fast path (no MatrixXf heap temporaries).
+        Eigen::Matrix<float, NX, NY> KS    = filtermath::gemm(K, S);
+        StateMat                     KSKt  = filtermath::gemm(KS, K.transpose());
+        StateMat                     KPxyT = filtermath::gemm(K, Pxy.transpose());
         P_ = P_ - KPxyT - KPxyT.transpose() + KSKt;
 
         // Symmetrize
