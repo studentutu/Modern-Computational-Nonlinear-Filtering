@@ -1,33 +1,45 @@
 # Development Notes
 
-## OptMathKernels Dependency — Release Audit & Pinning Policy
+## OptMathKernels Dependency — Sibling-Directory / Latest-`main` Policy
 
-**Date**: 2026-05-25
+**Date**: 2026-07-10 (supersedes the earlier FetchContent tag-pinning policy)
 
 The compute backends (NEON / SVE2 / Vulkan / CUDA) live in the external
 [OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)
-(OptMathKernels) project, consumed via CMake `FetchContent` and dispatched to
-through `Common/include/FilterMath.h` / `FilterMathGPU.h`.
+(OptMathKernels) project, dispatched to through `Common/include/FilterMath.h` /
+`FilterMathGPU.h`.
 
-### Pinning policy (the "tag/release format going forward")
+### Provisioning policy (current)
 
-OptMathKernels now publishes semantic-version release tags (`v0.5.0` … `v0.5.17`).
-This project **pins to a specific tag** rather than tracking the moving `main`
-branch. The pin lives in one place — `CMakeLists.txt`:
+The build **requires the OptMathKernels source tree as a sibling directory**
+(`../OptimizedKernelsForRaspberryPi5_NvidiaCUDA`) and builds it directly from its
+**local working tree — i.e. latest `main`, not a pinned tag** — via
+`add_subdirectory`. This is deliberate co-development: kernel edits are picked up
+on the next NLF rebuild without a tag/bump cycle.
+
+Provisioning is enforced in `CMakeLists.txt`:
 
 ```cmake
-set(OPTMATH_RELEASE_TAG "v0.5.17" CACHE STRING "Pinned OptMathKernels release tag")
-FetchContent_Declare(OptimizedKernels ... GIT_TAG ${OPTMATH_RELEASE_TAG})
+set(OPTMATH_DIR "${CMAKE_SOURCE_DIR}/../OptimizedKernelsForRaspberryPi5_NvidiaCUDA" CACHE PATH ...)
+option(AUTO_CLONE_DEPS "clone missing OptMath over HTTPS (latest main)" OFF)
+# missing + AUTO_CLONE_DEPS=OFF  -> FATAL_ERROR with instructions
+# missing + AUTO_CLONE_DEPS=ON   -> git clone --branch main <https> ${OPTMATH_DIR}
+add_subdirectory(${OPTMATH_DIR} ${CMAKE_BINARY_DIR}/optmath-build)
 ```
 
-Adopting a newer kernel release is a deliberate, audited step:
+`./bootstrap.sh` wraps this: it checks for the sibling directory, interactively
+offers to clone it over HTTPS (latest `main`) if absent, then configures + builds.
 
-1. `git -C $HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA fetch --tags`
-2. Audit the upstream diff `git diff <old-tag>..<new-tag>` — pay attention to
-   anything under `include/` (public API) and the backend `src/` the filters use.
-3. Bump `OPTMATH_RELEASE_TAG`, reconfigure, rebuild.
-4. `ctest --output-on-failure` (expect 25/25) and run the benchmark suite.
-5. Update README/this file, then commit and tag the parent release.
+**Trade-off (reproducibility):** tracking `main` means a given NLF commit is no
+longer bound to an exact kernel revision. If you need a reproducible build, check
+out a specific OptMathKernels commit/tag in the sibling directory before building
+(the working tree is what gets compiled), and record that revision in the release
+notes. To adopt/verify newer kernel code:
+
+1. `git -C $HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA pull` (or check out a revision).
+2. Rebuild NLF (`./bootstrap.sh` or `cmake --build build`).
+3. `ctest --output-on-failure` and run the benchmark suite.
+4. Update README/this file, then commit the parent release.
 
 ### Audit: v0.5.13 → v0.5.15 (adopted 2026-05-25)
 
