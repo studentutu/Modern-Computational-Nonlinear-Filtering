@@ -161,24 +161,25 @@ endif()
 # --- Dependency: OptimizedKernelsForRaspberryPi5_NvidiaCUDA (OptMathKernels) ---
 #
 # OptMathKernels provides the NEON / SVE2 / Vulkan / CUDA compute backends that
-# FilterMath dispatches to. The upstream project publishes semantic-version
-# release tags (v0.5.x); we PIN to a specific tag rather than tracking a moving
-# branch so that builds are reproducible and a kernel update is a deliberate,
-# audited bump of OPTMATH_RELEASE_TAG below (see DEVELOPMENT_NOTES.md ->
-# "OptMathKernels Dependency - Release Audit & Pinning Policy"). To adopt a
-# newer kernel release: audit the upstream diff,
-# update this tag, rebuild, retest, rebenchmark, then commit.
+# FilterMath dispatches to. This build REQUIRES the OptMath source tree to be
+# present as a sibling directory and builds it directly (add_subdirectory), so
+# the filters compile against the local working tree / latest `main` rather than
+# a pinned release tag. See README.md ("Building") and DEVELOPMENT_NOTES.md.
 #
-# Pinned: v0.5.17 — "fix TrsvLower64x64 test tolerance; document build deps"
-#   (v0.5.16 added x86_64 desktop RTX 5090 benchmark numbers — docs only;
-#    v0.5.17 relaxed the NEON TrsvLower64x64 unit-test tolerance to 5e-3 to match
-#    its TrsvUpper twin, and documented apt/build deps — glslang-tools/glslc for
-#    Vulkan SPIR-V shaders — in requirements.txt. No public API (include/) or
-#    compute-backend (src/) change vs v0.5.15.)
-set(OPTMATH_RELEASE_TAG "v0.5.17" CACHE STRING "Pinned OptMathKernels release tag")
-message(STATUS "Using OptimizedKernelsForRaspberryPi5_NvidiaCUDA @ ${OPTMATH_RELEASE_TAG}")
+# Provisioning contract (see also ./bootstrap.sh):
+#   * If OPTMATH_DIR exists, it is used as-is.
+#   * If it is missing and -DAUTO_CLONE_DEPS=ON, it is cloned over HTTPS (main).
+#   * If it is missing and AUTO_CLONE_DEPS is OFF (the default), configuration
+#     FAILS with instructions rather than silently fetching from the network.
+set(OPTMATH_DIR "${CMAKE_SOURCE_DIR}/../OptimizedKernelsForRaspberryPi5_NvidiaCUDA"
+    CACHE PATH "Path to the required OptimizedKernels (OptMathKernels) sibling source tree")
+set(OPTMATH_HTTPS_URL "https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA.git"
+    CACHE STRING "Public HTTPS URL used to clone OptMathKernels when AUTO_CLONE_DEPS=ON")
+option(AUTO_CLONE_DEPS
+    "If the OptMathKernels sibling directory is missing, git-clone it (latest main) over HTTPS instead of failing"
+    OFF)
 
-# Configure OptimizedKernels options before FetchContent
+# Configure OptimizedKernels options before add_subdirectory
 set(ENABLE_NEON ON CACHE BOOL "Enable ARM NEON optimizations" FORCE)
 set(ENABLE_SVE2 ON CACHE BOOL "Enable ARM SVE2 optimizations" FORCE)
 set(ENABLE_VULKAN ON CACHE BOOL "Enable Vulkan GPU compute" FORCE)
@@ -190,29 +191,38 @@ else()
     set(ENABLE_CUDA OFF CACHE BOOL "Enable NVIDIA CUDA support" FORCE)
 endif()
 
-# Dependency source. Defaults to the PUBLIC GitHub URL so a fresh `git clone` of
-# this repo configures and builds on any machine (reproducibility). For offline
-# or local development against a working clone, override with
-#   -DOPTMATH_REPO=$ENV{HOME}/OptimizedKernelsForRaspberryPi5_NvidiaCUDA
-# GIT_TAG follows the pinned release tag; FetchContent checks OPTMATH_RELEASE_TAG
-# out into _deps/optimizedkernels-src.
-set(OPTMATH_REPO "https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA.git"
-    CACHE STRING "OptMathKernels source (public URL by default; may be a local clone path)")
-message(STATUS "OptMathKernels source: ${OPTMATH_REPO}")
-FetchContent_Declare(
-    OptimizedKernels
-    GIT_REPOSITORY ${OPTMATH_REPO}
-    GIT_TAG ${OPTMATH_RELEASE_TAG}
-)
-FetchContent_MakeAvailable(OptimizedKernels)
+# Require the OptMath sibling directory; optionally clone it over HTTPS.
+if(NOT EXISTS "${OPTMATH_DIR}/CMakeLists.txt")
+    if(AUTO_CLONE_DEPS)
+        find_package(Git REQUIRED)
+        message(STATUS "OptMathKernels not found at ${OPTMATH_DIR}; cloning ${OPTMATH_HTTPS_URL} (main)...")
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" clone --branch main "${OPTMATH_HTTPS_URL}" "${OPTMATH_DIR}"
+            RESULT_VARIABLE _optmath_clone_rc)
+        if(_optmath_clone_rc)
+            message(FATAL_ERROR
+                "Failed to clone OptMathKernels from ${OPTMATH_HTTPS_URL} (git exit ${_optmath_clone_rc}).")
+        endif()
+    else()
+        message(FATAL_ERROR
+            "Required dependency OptMathKernels was not found at:\n"
+            "    ${OPTMATH_DIR}\n"
+            "This project requires the OptimizedKernelsForRaspberryPi5_NvidiaCUDA source tree to be\n"
+            "present as a sibling directory. To provision it, either:\n"
+            "  * run   ./bootstrap.sh                 (interactive: offers to clone + build), or\n"
+            "  * reconfigure with  -DAUTO_CLONE_DEPS=ON   (clones latest main over HTTPS), or\n"
+            "  * clone it manually:\n"
+            "        git clone ${OPTMATH_HTTPS_URL} \"${OPTMATH_DIR}\"\n"
+            "  * or point  -DOPTMATH_DIR=<path>  at an existing clone.")
+    endif()
+endif()
 
-# Ensure headers are found. Try both casing conventions.
-if(DEFINED OptimizedKernels_SOURCE_DIR)
-    include_directories(${OptimizedKernels_SOURCE_DIR}/include)
-endif()
-if(DEFINED optimizedkernels_SOURCE_DIR)
-    include_directories(${optimizedkernels_SOURCE_DIR}/include)
-endif()
+# Build OptMathKernels from the local sibling tree (latest main / working tree).
+message(STATUS "OptMathKernels source (local): ${OPTMATH_DIR}")
+set(OPTMATH_SOURCE_DIR "${OPTMATH_DIR}")
+set(OPTMATH_BINARY_DIR "${CMAKE_BINARY_DIR}/optmath-build")
+add_subdirectory("${OPTMATH_DIR}" "${OPTMATH_BINARY_DIR}")
+include_directories("${OPTMATH_SOURCE_DIR}/include")
 
 # Add subdirectories
 add_subdirectory(EKF)

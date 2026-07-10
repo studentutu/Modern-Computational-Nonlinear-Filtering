@@ -5,6 +5,8 @@
 #include <Eigen/QR>
 #include <Eigen/Cholesky>
 #include <iostream>
+#include <cmath>
+#include <numbers>
 #include "StateSpaceModel.h"
 #include "SigmaPoints.h"
 #include "FilterMath.h"
@@ -165,8 +167,7 @@ public:
             // Wrap angular state differences to [-π, π]
             for (int j = 0; j < NX; ++j) {
                 if (model_.isAngularState(j)) {
-                    while (diff(j) > M_PI) diff(j) -= 2.0f * M_PI;
-                    while (diff(j) < -M_PI) diff(j) += 2.0f * M_PI;
+                    diff(j) = std::remainder(diff(j), 2.0f * std::numbers::pi_v<float>);
                 }
             }
             float wc_sign = (sigmas.Wc(i) >= 0) ? 1.0f : -1.0f;
@@ -186,8 +187,7 @@ public:
         // Wrap angular state differences to [-π, π]
         for (int j = 0; j < NX; ++j) {
             if (model_.isAngularState(j)) {
-                while (diff_0(j) > M_PI) diff_0(j) -= 2.0f * M_PI;
-                while (diff_0(j) < -M_PI) diff_0(j) += 2.0f * M_PI;
+                diff_0(j) = std::remainder(diff_0(j), 2.0f * std::numbers::pi_v<float>);
             }
         }
         float wc_0 = sigmas.Wc(0);
@@ -201,8 +201,7 @@ public:
                     State d = X_pred.col(i) - x_pred_mean;
                     for (int j2 = 0; j2 < NX; ++j2) {
                         if (model_.isAngularState(j2)) {
-                            while (d(j2) > M_PI) d(j2) -= 2.0f * M_PI;
-                            while (d(j2) < -M_PI) d(j2) += 2.0f * M_PI;
+                            d(j2) = std::remainder(d(j2), 2.0f * std::numbers::pi_v<float>);
                         }
                     }
                     P_full += sigmas.Wc(i) * (d * d.transpose());
@@ -230,10 +229,8 @@ public:
             // Wrap angular state differences to [-π, π]
             for (int j = 0; j < NX; ++j) {
                 if (model_.isAngularState(j)) {
-                    while (diff_pred(j) > M_PI) diff_pred(j) -= 2.0f * M_PI;
-                    while (diff_pred(j) < -M_PI) diff_pred(j) += 2.0f * M_PI;
-                    while (diff_x(j) > M_PI) diff_x(j) -= 2.0f * M_PI;
-                    while (diff_x(j) < -M_PI) diff_x(j) += 2.0f * M_PI;
+                    diff_pred(j) = std::remainder(diff_pred(j), 2.0f * std::numbers::pi_v<float>);
+                    diff_x(j) = std::remainder(diff_x(j), 2.0f * std::numbers::pi_v<float>);
                 }
             }
             Dp.col(i) = diff_pred;
@@ -334,16 +331,14 @@ public:
             // cut.  Mirrors the angular state-difference wrap just below.
             for (int j = 0; j < NY; ++j) {
                 if (model_.isAngularObservation(j)) {
-                    while (Dy(j, i) >  M_PI) Dy(j, i) -= 2.0f * M_PI;
-                    while (Dy(j, i) < -M_PI) Dy(j, i) += 2.0f * M_PI;
+                    Dy(j, i) = std::remainder(Dy(j, i), 2.0f * std::numbers::pi_v<float>);
                 }
             }
             State diff_x = sigmas.X.col(i) - x_;
             // Wrap angular state differences to [-π, π]
             for (int j = 0; j < NX; ++j) {
                 if (model_.isAngularState(j)) {
-                    while (diff_x(j) > M_PI) diff_x(j) -= 2.0f * M_PI;
-                    while (diff_x(j) < -M_PI) diff_x(j) += 2.0f * M_PI;
+                    diff_x(j) = std::remainder(diff_x(j), 2.0f * std::numbers::pi_v<float>);
                 }
             }
             Dx_w.col(i) = sigmas.Wc(i) * diff_x;
@@ -370,8 +365,7 @@ public:
         // a catastrophic correction.  No-op for non-angular observations.
         for (int j = 0; j < NY; ++j) {
             if (model_.isAngularObservation(j)) {
-                while (innovation(j) >  M_PI) innovation(j) -= 2.0f * M_PI;
-                while (innovation(j) < -M_PI) innovation(j) += 2.0f * M_PI;
+                innovation(j) = std::remainder(innovation(j), 2.0f * std::numbers::pi_v<float>);
             }
         }
 

@@ -45,6 +45,7 @@ endif()
 unset(VEC_ADD_SHADER_SPV CACHE)
 find_file(VEC_ADD_SHADER_SPV "vec_add.comp.spv"
     PATHS
+        ${OPTMATH_BINARY_DIR}/src
         ${optimizedkernels_BINARY_DIR}/src
         ${OptimizedKernels_BINARY_DIR}/src
     NO_DEFAULT_PATH
@@ -56,6 +57,7 @@ find_file(VEC_ADD_SHADER_SPV "vec_add.comp.spv"
 unset(VEC_ADD_SHADER_SRC CACHE)
 find_file(VEC_ADD_SHADER_SRC "vec_add.comp.glsl"
     PATHS
+        ${OPTMATH_SOURCE_DIR}/src/vulkan/shaders
         ${optimizedkernels_SOURCE_DIR}/src/vulkan/shaders
         ${OptimizedKernels_SOURCE_DIR}/src/vulkan/shaders
     NO_DEFAULT_PATH
@@ -97,6 +99,6 @@ elseif(VEC_ADD_SHADER_SRC)
     endif()
 else()
     message(WARNING "Could not find vec_add.comp.spv or vec_add.comp.glsl in OptimizedKernels dependency.")
-    message(STATUS "Search paths tried (Binary): ${optimizedkernels_BINARY_DIR}/src")
-    message(STATUS "Search paths tried (Source): ${optimizedkernels_SOURCE_DIR}/src/vulkan/shaders")
+    message(STATUS "Search paths tried (Binary): ${OPTMATH_BINARY_DIR}/src")
+    message(STATUS "Search paths tried (Source): ${OPTMATH_SOURCE_DIR}/src/vulkan/shaders")
 endif()

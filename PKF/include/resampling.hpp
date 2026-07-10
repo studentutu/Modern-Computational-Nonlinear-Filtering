@@ -58,7 +58,11 @@ namespace Resampling {
         std::uniform_real_distribution<float> dist(0.0f, 1.0f / static_cast<float>(N));
         float u0 = dist(rng);
 
-        float csum = weights[0];
+        // Accumulate the cumulative weight sum in double even though the weights
+        // are float: for large N with skewed weights a float running sum drifts
+        // enough to misplace parents. Matches the double-weight overloads and the
+        // RBPF Kahan-summed path. (u stays float; the comparison promotes it.)
+        double csum = weights[0];
         size_t k = 0;
 
         for (size_t i = 0; i < N; ++i) {
@@ -117,7 +121,11 @@ namespace Resampling {
 
         std::vector<size_t> parents(N);
 
-        float csum = weights[0];
+        // Accumulate the cumulative weight sum in double even though the weights
+        // are float: for large N with skewed weights a float running sum drifts
+        // enough to misplace parents. Matches the double-weight overloads and the
+        // RBPF Kahan-summed path. (u stays float; the comparison promotes it.)
+        double csum = weights[0];
         size_t k = 0;
 
         std::uniform_real_distribution<float> dist(0.0f, 1.0f);

@@ -114,12 +114,18 @@ public:
             // loop body: under `omp parallel for` any variable declared outside is
             // shared, so hoisting these would let threads stomp each other's
             // get_dynamics()/get_observation() output (a data race). Keep them local.
-            Eigen::MatrixXf A(Types::Nlin, Types::Nlin);
+            // Fixed-size A/H (compile-time dims) so the per-particle gemm/mat_vec
+            // calls below and inside kf.predict()/update() bind to FilterMath's
+            // fixed-size fast path (stack, no dispatch, no heap). They still bind
+            // to the model's Eigen::Ref<MatrixXf> out-params (a fixed-size,
+            // contiguous matrix is a valid dynamic Ref target). B is left dynamic
+            // because its column count follows the control dimension.
+            typename Types::Matrix_A A;
             Eigen::MatrixXf B(Types::Nlin, Types::Nlin);
             LinearState bias;
             LinearCov Q;
 
-            Eigen::MatrixXf H(Types::Ny, Types::Nlin);
+            typename Types::Matrix_H H;
             Observation offset;
             ObsCov R;
 
@@ -147,13 +153,13 @@ public:
 
             conditional_model_.get_observation(p.x_nl, t_k, offset, H, R);
 
-            // Likelihood calculation using accelerated operations
-            Eigen::VectorXf Hx = filtermath::mat_vec_mul(H, Eigen::VectorXf(p.kf.x));
+            // Likelihood calculation using accelerated operations (fixed-size fast path)
+            Observation Hx = filtermath::mat_vec_mul(H, p.kf.x);
             Observation y_pred = Hx + offset;
             Observation innovation = y_k - y_pred;
 
             // S = H * P * H^T + R
-            Eigen::MatrixXf HP = filtermath::gemm(H, p.kf.P);
+            Eigen::Matrix<float, Types::Ny, Types::Nlin> HP = filtermath::gemm(H, p.kf.P);
             ObsCov S = filtermath::gemm(HP, H.transpose());
             S += R;
 
@@ -174,8 +180,8 @@ public:
                 log_det = std::log(det);
             }
 
-            // Mahalanobis distance via SPD solve
-            Eigen::VectorXf S_solved = filtermath::solve_spd(S, innovation);
+            // Mahalanobis distance via SPD solve (fixed-size: stack LLT, no heap)
+            Observation S_solved = filtermath::solve_spd(S, innovation);
             float mahalanobis;
             if (S_solved.size() > 0) {
                 mahalanobis = innovation.transpose() * S_solved;

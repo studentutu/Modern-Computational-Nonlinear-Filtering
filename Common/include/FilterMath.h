@@ -41,6 +41,18 @@
   #include <optmath/sve2_kernels.hpp>
 #endif
 
+// ---------- SVE2 detection ----------
+// Mirror the CUDA gating above: only emit SVE2 dispatch when OptMathKernels was
+// actually built with SVE2 (OPTMATH_USE_SVE2, exported by the kernels target when
+// the host reports SVE2). On a Cortex-A76 / Raspberry Pi 5, SVE2 is absent so the
+// optmath::sve2::* symbols are never compiled; referencing them unconditionally is
+// an undefined-symbol link error. When SVE2 is unavailable the NEON path is used.
+#if defined(OPTMATH_USE_SVE2)
+  #define FILTERMATH_HAS_SVE2 1
+#else
+  #define FILTERMATH_HAS_SVE2 0
+#endif
+
 // Size threshold for GPU dispatch (matrices smaller than this stay on CPU)
 // PCIe latency typically 10-20us, so GPU is only faster for N >= 32
 #ifndef FILTERMATH_CUDA_MIN_DIM
@@ -80,9 +92,11 @@ inline Eigen::MatrixXf gemm(const Eigen::MatrixXf& A, const Eigen::MatrixXf& B) 
     }
 #endif
 
-#if FILTERMATH_ARM64
+#if FILTERMATH_HAS_SVE2
     if (optmath::sve2::is_available())
         return optmath::sve2::sve2_gemm_blocked(A, B);
+#endif
+#if FILTERMATH_ARM64
     if (optmath::neon::is_available())
         return optmath::neon::neon_gemm(A, B);
 #endif
@@ -247,6 +261,27 @@ inline Eigen::VectorXf solve_spd(const Eigen::MatrixXf& A, const Eigen::VectorXf
     if (ldlt.info() == Eigen::Success && ldlt.isPositive())
         return ldlt.solve(b);
     return Eigen::VectorXf();
+}
+
+// ------------------------------------------------------------------------
+//  Fixed-size SPD solve fast path (compile-time dimensions)
+// ------------------------------------------------------------------------
+// Same rationale as the fixed-size gemm/mat_vec_mul overloads: for small
+// compile-time operands (e.g. the RBPF per-particle innovation solve, S ~ Ny×Ny
+// with Ny<=4) this does a stack-allocated LDLT with no heap allocation and no
+// runtime backend dispatch. Selected only when both operands have compile-time
+// extents (identity binding beats the fixed->dynamic conversion the MatrixXf
+// overload would need). Unlike the dynamic overload a fixed-size result cannot be
+// "empty"; callers needing a singularity signal should gate on the covariance
+// determinant (as the RBPF does) rather than on the returned vector's size.
+template<typename DerivedA, typename DerivedB,
+         typename = std::enable_if_t<
+             DerivedA::RowsAtCompileTime != Eigen::Dynamic &&
+             DerivedA::ColsAtCompileTime != Eigen::Dynamic &&
+             DerivedB::RowsAtCompileTime != Eigen::Dynamic>>
+inline Eigen::Matrix<float, DerivedB::RowsAtCompileTime, 1>
+solve_spd(const Eigen::MatrixBase<DerivedA>& A, const Eigen::MatrixBase<DerivedB>& b) {
+    return A.ldlt().solve(b);
 }
 
 // ========================================================================
@@ -447,8 +482,10 @@ inline Eigen::MatrixXf weighted_outer_sum(
         for (int j = 0; j < m; ++j) {
             weighted_res.col(j) = weights(j) * residuals.col(j);
         }
+#if FILTERMATH_HAS_SVE2
         if (optmath::sve2::is_available())
             return optmath::sve2::sve2_gemm_blocked(weighted_res, residuals.transpose());
+#endif
         if (optmath::neon::is_available())
             return optmath::neon::neon_gemm(weighted_res, residuals.transpose());
     }

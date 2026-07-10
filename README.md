@@ -409,7 +409,7 @@ Before deploying any Kalman filter, verify:
 - **Eigen3**: Linear algebra (3.4+, fetched automatically if not found)
 - **CMake**: Build system (3.14+)
 - **Python 3**: (3.10+) For visualization scripts; a virtual environment is created automatically during the build
-- **[OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)** (OptMathKernels): NEON/SVE2/Vulkan/CUDA acceleration, fetched automatically via FetchContent from the public GitHub URL (override with `-DOPTMATH_REPO=<local-path>` for offline builds). **Pinned to a release tag** for reproducible builds — see `OPTMATH_RELEASE_TAG` in the root `CMakeLists.txt` (currently **v0.5.17**). Bumping it is a deliberate, audited step; see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) → *OptMathKernels Release Audit & Pinning Policy*.
+- **[OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)** (OptMathKernels): NEON/SVE2/Vulkan/CUDA acceleration. **Required as a sibling directory** next to this repo and built directly from its **latest `main`** working tree (no pinned tag). If it is missing, `./bootstrap.sh` offers to clone it over HTTPS and build for you, or configure with `-DAUTO_CLONE_DEPS=ON`. See [Build Instructions](#build-instructions).
 
 ### Optional
 
@@ -430,11 +430,9 @@ sudo apt install glslang-tools
 # Optional: Vulkan runtime (if not already installed)
 sudo apt install vulkan-tools libvulkan-dev
 
-# (Optional) Pre-clone the OptimizedKernels dependency for OFFLINE builds.
-# By default the build fetches it automatically from the public GitHub URL via
-# FetchContent (no manual step needed). Only pre-clone if you want to build
-# offline or against a local working copy, then point the build at it with
-# -DOPTMATH_REPO=$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA (see Build Options).
+# The OptimizedKernels dependency is REQUIRED as a sibling directory next to this
+# repo. bootstrap.sh (see Build Instructions) will offer to clone it for you; to
+# provision it manually, clone it beside this repo so both live under the same parent:
 cd ~
 git clone https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA.git
 ```
@@ -468,12 +466,26 @@ nvidia-smi              # should list your GPU + driver
 git clone https://github.com/n4hy/Modern-Computational-Nonlinear-Filtering.git
 cd Modern-Computational-Nonlinear-Filtering
 
-# Create build directory
+# EASIEST: one-shot bootstrap. Checks for the required OptimizedKernels sibling
+# directory and, if it is missing, OFFERS to git-clone it (latest main) over
+# HTTPS, then configures + builds everything. Extra args pass through to CMake.
+./bootstrap.sh
+# ./bootstrap.sh -DNLF_BUILD_PYTHON_VENV=OFF     # e.g. skip the plotting venv
+
+# --- or configure manually ---------------------------------------------------
+# The build REQUIRES the OptimizedKernels source tree as a sibling directory
+# (../OptimizedKernelsForRaspberryPi5_NvidiaCUDA). It is built directly from its
+# local working tree (latest main). If it is absent, configuration fails with
+# instructions unless you pass -DAUTO_CLONE_DEPS=ON to clone it over HTTPS.
 mkdir -p build && cd build
 
-# Configure and build (CUDA auto-detected)
-# CMake will automatically create a Python venv at .nlfvenv/ and install dependencies
+# Configure and build (CUDA auto-detected). CMake also creates a Python venv at
+# .nlfvenv/ for the plotting scripts.
 cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+
+# If the sibling dependency is not present, let CMake clone it (latest main):
+cmake .. -DCMAKE_BUILD_TYPE=Release -DAUTO_CLONE_DEPS=ON
 make -j$(nproc)
 
 # Optional: build CUDA code for your exact GPU only (faster nvcc, smaller binary).
@@ -486,10 +498,10 @@ make -j$(nproc)
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_COMPILER=""
 make -j$(nproc)
 
-# Offline / CI build: skip the plotting Python venv (no PyPI access needed) and
-# use a locally-cloned dependency.
+# Offline / CI build: skip the plotting Python venv (no PyPI access needed). Point
+# -DOPTMATH_DIR at the sibling clone if it is not at the default ../ location.
 cmake .. -DCMAKE_BUILD_TYPE=Release -DNLF_BUILD_PYTHON_VENV=OFF \
-         -DOPTMATH_REPO=$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA
+         -DOPTMATH_DIR=$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA
 make -j$(nproc)
 
 # (Optional) system install — installs the reusable filter headers under
@@ -514,11 +526,12 @@ ctest --output-on-failure
 source ../.nlfvenv/bin/activate
 python3 ../scripts/plot_benchmarks.py .
 
-# Run OptimizedKernels tests (Vulkan, radar, platform)
-./_deps/optimizedkernels-build/tests/test_vulkan_vector
-./_deps/optimizedkernels-build/tests/test_vulkan_matrix
-./_deps/optimizedkernels-build/tests/test_radar_caf
-./_deps/optimizedkernels-build/tests/test_radar_cfar
+# Run OptimizedKernels tests (Vulkan, radar, platform). The dependency is now
+# built under build/optmath-build/ (add_subdirectory), not _deps/.
+./optmath-build/tests/test_vulkan_vector
+./optmath-build/tests/test_vulkan_matrix
+./optmath-build/tests/test_radar_caf
+./optmath-build/tests/test_radar_cfar
 ```
 
 ### Build Options
@@ -528,9 +541,9 @@ python3 ../scripts/plot_benchmarks.py .
 | `-DCMAKE_CUDA_COMPILER=""` | Disable CUDA (e.g., if toolkit is not installed or causes issues) |
 | `-DCMAKE_CUDA_ARCHITECTURES=native` | Build CUDA code for the detected GPU only. Optional on CUDA 13.x (default list already includes Blackwell SM 100/120); useful to shrink build time |
 | `-DOPTMATH_CUDA_NATIVE=ON` | Make the OptimizedKernels dependency honor `native` instead of its default multi-arch list |
-| `-DOPTMATH_REPO=<url-or-path>` | OptMathKernels source (default: public GitHub URL). Set to a local clone path for offline builds |
+| `-DOPTMATH_DIR=<path>` | Path to the required OptimizedKernels sibling source tree (default `../OptimizedKernelsForRaspberryPi5_NvidiaCUDA`). Built directly from its local working tree (latest `main`) |
+| `-DAUTO_CLONE_DEPS=ON` | If `OPTMATH_DIR` is missing, clone it (latest `main`) over HTTPS instead of failing (default `OFF`). `./bootstrap.sh` does this interactively |
 | `-DNLF_BUILD_PYTHON_VENV=OFF` | Skip creating the plotting Python venv (the C++ build then needs no Python/PyPI — for offline/CI) |
-| `-DOPTMATH_RELEASE_TAG=v0.5.17` | OptMathKernels release tag to fetch/pin (default `v0.5.17`). Bump only after auditing the upstream diff — see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) |
 | `-DCMAKE_BUILD_TYPE=Release` | Optimized build with `-O3 -march=native` (forwarded to nvcc's host compiler via `-Xcompiler` for ABI consistency) |
 | `-DCMAKE_BUILD_TYPE=Debug` | Debug build with symbols |
 
