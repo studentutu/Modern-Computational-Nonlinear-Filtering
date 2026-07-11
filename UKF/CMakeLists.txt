@@ -37,6 +37,11 @@ add_executable(srukf_smoother_test tests/test_srukf_smoother.cpp)
 target_link_libraries(srukf_smoother_test Eigen3::Eigen OptMathKernels)
 enable_lto_if_supported(srukf_smoother_test)
 
+# Full-interval unscented (plain-covariance) RTS smoother + iterated smoothing test
+add_executable(ukf_smoother_test tests/test_ukf_smoother.cpp)
+target_link_libraries(ukf_smoother_test Eigen3::Eigen OptMathKernels)
+enable_lto_if_supported(ukf_smoother_test)
+
 # UKF vs SRUKF Comparison (disabled - source files not present)
 # add_executable(compare_ukf_srukf compare_ukf_srukf.cpp)
 # add_executable(simple_comparison simple_comparison.cpp)

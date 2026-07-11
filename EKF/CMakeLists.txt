@@ -23,3 +23,8 @@ set(SOURCES
 add_executable(ekf_test ${SOURCES})
 target_link_libraries(ekf_test Eigen3::Eigen OptMathKernels)
 enable_lto_if_supported(ekf_test)
+
+# Full-interval EKF RTS smoother + iterated (IEKS) regression test
+add_executable(ekf_smoother_test tests/test_ekf_smoother.cpp src/EKF.cpp)
+target_link_libraries(ekf_smoother_test Eigen3::Eigen OptMathKernels)
+enable_lto_if_supported(ekf_smoother_test)
