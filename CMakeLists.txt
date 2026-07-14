@@ -50,28 +50,100 @@ else()
     set(NLF_HAS_CUDA FALSE)
 endif()
 
+# --- Target architecture detection ---
+# The filters are portable C++; the SIMD backends are not. Detect the TARGET
+# architecture (CMAKE_SYSTEM_PROCESSOR, which respects cross-compilation) so the
+# ARM-only options below are never forced onto a non-ARM target. FilterMath.h
+# performs the matching decision at compile time via FILTERMATH_ARM64 and falls
+# back to Eigen, so every tier here is optional.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64|armv8)")
+    set(NLF_ARCH_ARM TRUE)
+    set(NLF_ARCH_NAME "ARM64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm|ARM)")
+    set(NLF_ARCH_ARM TRUE)
+    set(NLF_ARCH_NAME "ARM32")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i[3-6]86|x86)")
+    set(NLF_ARCH_X86 TRUE)
+    set(NLF_ARCH_NAME "x86")
+else()
+    set(NLF_ARCH_NAME "${CMAKE_SYSTEM_PROCESSOR} (generic)")
+endif()
+message(STATUS "Target architecture: ${NLF_ARCH_NAME}")
+
 # --- Compiler Optimization Flags for Release builds ---
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    # Check LTO support but DO NOT enable globally - it conflicts with CUDA nvlink
-    # We'll apply LTO to specific targets after dependencies are loaded
-    include(CheckIPOSupported)
-    check_ipo_supported(RESULT NLF_LTO_SUPPORTED OUTPUT lto_error)
-    if(NLF_LTO_SUPPORTED)
-        message(STATUS "LTO/IPO supported - will apply to local targets only (not CUDA)")
+# Guarded by generator expressions ($<CONFIG:Release>), NOT `if(CMAKE_BUILD_TYPE
+# STREQUAL "Release")`. The STREQUAL form silently no-ops twice: on a first
+# configure from an empty cache (CMAKE_BUILD_TYPE is not yet set when this line
+# runs, even though the dependency later defaults it to Release in the cache),
+# and under every multi-config generator (Ninja Multi-Config, Visual Studio, Xcode),
+# where CMAKE_BUILD_TYPE is empty by design. Both cases produced binaries with no
+# -O3/-march/LTO while CMakeCache.txt read "Release".
+include(CheckIPOSupported)
+check_ipo_supported(RESULT NLF_LTO_SUPPORTED OUTPUT lto_error)
+if(NLF_LTO_SUPPORTED)
+    message(STATUS "LTO/IPO supported - will apply to local targets only (not CUDA)")
+else()
+    message(STATUS "LTO/IPO not supported: ${lto_error}")
+endif()
+
+add_compile_definitions($<$<CONFIG:Release>:EIGEN_NO_DEBUG>)
+
+# Native-CPU tuning. OFF by default when cross-compiling, since "native" then
+# means the BUILD host and would emit instructions the target cannot execute.
+if(CMAKE_CROSSCOMPILING)
+    set(_nlf_native_default OFF)
+else()
+    set(_nlf_native_default ON)
+endif()
+option(NLF_ENABLE_NATIVE_ARCH
+    "Tune Release builds for the building machine's CPU (-march=native / -mcpu=native). Turn OFF for portable/redistributable binaries."
+    ${_nlf_native_default})
+
+# The native-tuning spelling is compiler- and architecture-specific: x86 GCC/Clang
+# take -march=native; aarch64 GCC/Clang want -mcpu=native (-march=native is rejected
+# by some aarch64 toolchains and by Apple clang); MSVC has no equivalent. Probe
+# rather than assume, so an unknown toolchain degrades to portable codegen instead
+# of failing to configure.
+set(NLF_ARCH_FLAG "")
+if(NLF_ENABLE_NATIVE_ARCH AND NOT MSVC)
+    include(CheckCXXCompilerFlag)
+    if(NLF_ARCH_ARM)
+        check_cxx_compiler_flag("-mcpu=native" NLF_HAS_MCPU_NATIVE)
+        if(NLF_HAS_MCPU_NATIVE)
+            set(NLF_ARCH_FLAG "-mcpu=native")
+        endif()
     else()
-        message(STATUS "LTO/IPO not supported: ${lto_error}")
+        check_cxx_compiler_flag("-march=native" NLF_HAS_MARCH_NATIVE)
+        if(NLF_HAS_MARCH_NATIVE)
+            set(NLF_ARCH_FLAG "-march=native")
+        endif()
     endif()
-    add_compile_definitions(EIGEN_NO_DEBUG)
-    # Host optimization flags. nvcc rejects -march=native directly ("Unknown option"),
-    # so CXX gets it straight while CUDA forwards it to the host compiler via -Xcompiler.
-    # Both languages MUST enable the same arch: -march=native raises Eigen's
-    # EIGEN_MAX_ALIGN_BYTES from 16 to 32, and mixing 16- and 32-byte-aligned Eigen objects
-    # across the C++/CUDA translation-unit boundary corrupts the heap ("free(): invalid
-    # pointer", e.g. a VectorXf allocated in a .cu and freed in a .cpp). The OptimizedKernels
-    # dependency inherits these directory options, so this keeps its .cpp/.cu TUs ABI-consistent.
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-O3>
-                        $<$<COMPILE_LANGUAGE:CXX>:-march=native>
-                        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-O3,-march=native>)
+endif()
+
+if(MSVC)
+    add_compile_options($<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:/O2>)
+else()
+    add_compile_options($<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:-O3>)
+endif()
+
+if(NLF_ARCH_FLAG)
+    message(STATUS "Native CPU tuning: ${NLF_ARCH_FLAG}")
+    # Both languages MUST agree on the arch flag. On x86, -march=native raises Eigen's
+    # EIGEN_MAX_ALIGN_BYTES from 16 to 32, and mixing 16- and 32-byte-aligned Eigen
+    # objects across the C++/CUDA translation-unit boundary corrupts the heap
+    # ("free(): invalid pointer" — e.g. a VectorXf allocated in a .cu and freed in a
+    # .cpp). aarch64 is not exposed to that specific hazard (baseline armv8-a already
+    # implies NEON and EIGEN_MAX_ALIGN_BYTES stays 16 either way), but keeping the two
+    # languages in lockstep is correct on every target. nvcc rejects the flag directly
+    # ("Unknown option"), so CUDA forwards it to the host compiler via -Xcompiler.
+    # The OptimizedKernels dependency inherits these directory options, keeping its
+    # .cpp/.cu TUs ABI-consistent with ours.
+    add_compile_options($<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:${NLF_ARCH_FLAG}>)
+    if(NLF_HAS_CUDA)
+        add_compile_options($<$<AND:$<COMPILE_LANGUAGE:CUDA>,$<CONFIG:Release>>:-Xcompiler=${NLF_ARCH_FLAG}>)
+    endif()
+else()
+    message(STATUS "Native CPU tuning: disabled (portable codegen)")
 endif()
 
 # Helper function to enable LTO on non-CUDA targets
@@ -179,10 +251,32 @@ option(AUTO_CLONE_DEPS
     "If the OptMathKernels sibling directory is missing, git-clone it (latest main) over HTTPS instead of failing"
     OFF)
 
-# Configure OptimizedKernels options before add_subdirectory
-set(ENABLE_NEON ON CACHE BOOL "Enable ARM NEON optimizations" FORCE)
-set(ENABLE_SVE2 ON CACHE BOOL "Enable ARM SVE2 optimizations" FORCE)
-set(ENABLE_VULKAN ON CACHE BOOL "Enable Vulkan GPU compute" FORCE)
+# Configure OptimizedKernels options before add_subdirectory.
+#
+# These are gated on the TARGET architecture rather than forced ON unconditionally.
+# NEON and SVE2 are ARM-only instruction sets: requesting them on an x86 or other
+# target asks the dependency for something it cannot build there. (It tolerates the
+# request today by internally re-checking ON_ARM, so the old unconditional force was
+# not fatal — but it made this project's build inputs a lie about its own target, and
+# left NLF one dependency-refactor away from breaking on every non-ARM machine.)
+#
+# Each is exposed as an NLF-level option so a user can still override it, and the
+# user's choice is what propagates to the dependency. Every backend is optional:
+# FilterMath.h resolves the same tiers at compile time and falls back to Eigen, so a
+# target with none of them still builds and produces identical filter results.
+option(NLF_ENABLE_NEON  "Build the ARM NEON kernels (ARM targets only)" ${NLF_ARCH_ARM})
+option(NLF_ENABLE_SVE2  "Build the ARM SVE2 kernels (ARM targets only; skipped when the CPU lacks SVE2)" ${NLF_ARCH_ARM})
+option(NLF_ENABLE_VULKAN "Build the Vulkan compute backend (portable; auto-skipped when no SDK is found)" ON)
+
+set(ENABLE_NEON  ${NLF_ENABLE_NEON}  CACHE BOOL "Enable ARM NEON optimizations" FORCE)
+set(ENABLE_SVE2  ${NLF_ENABLE_SVE2}  CACHE BOOL "Enable ARM SVE2 optimizations" FORCE)
+set(ENABLE_VULKAN ${NLF_ENABLE_VULKAN} CACHE BOOL "Enable Vulkan GPU compute" FORCE)
+
+if(NLF_ARCH_ARM)
+    message(STATUS "SIMD backends: NEON=${NLF_ENABLE_NEON} SVE2=${NLF_ENABLE_SVE2} (SVE2 sources are skipped unless the CPU implements it)")
+else()
+    message(STATUS "SIMD backends: none for ${NLF_ARCH_NAME} - filter math uses the Eigen fallback path")
+endif()
 
 if(NLF_HAS_CUDA)
     set(ENABLE_CUDA ON CACHE BOOL "Enable NVIDIA CUDA support" FORCE)
