@@ -5,9 +5,9 @@
 **High-Performance Nonlinear State Estimation for Embedded Systems**
 
 [![C++20](https://img.shields.io/badge/C++-20-blue.svg)](https://isocpp.org/)
-[![Platform](https://img.shields.io/badge/Platform-ARM%20aarch64%20%2B%20x86__64-red.svg)](https://www.raspberrypi.com/)
+[![Portable](https://img.shields.io/badge/Portable-any%20C%2B%2B20%20target-red.svg)](https://isocpp.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Optimization](https://img.shields.io/badge/Optimization-NEON%20%2B%20SVE2%20%2B%20Vulkan%20%2B%20CUDA*-orange.svg)](https://developer.arm.com/Architectures/Neon)
+[![Optional acceleration](https://img.shields.io/badge/Optional-NEON%20%7C%20SVE2%20%7C%20Vulkan%20%7C%20CUDA-orange.svg)](https://developer.arm.com/Architectures/Neon)
 
 </div>
 
@@ -16,6 +16,7 @@
 ## Table of Contents
 
 - [Overview](#overview)
+- [Portability](#portability)
 - [Implemented Filters](#implemented-filters)
 - [Benchmark Results](#benchmark-results)
 - [Numerical Stability Guide](#numerical-stability-guide)
@@ -31,24 +32,62 @@
 
 ## Overview
 
-This repository provides nonlinear filtering implementations optimized for **ARM aarch64** (Raspberry Pi 5, Orange Pi 5/6) and **x86_64** using **ARM NEON/SVE2 intrinsics**, **Vulkan compute shaders**, and **NVIDIA CUDA**. All implementations use single-precision floating point (`float`) for maximum SIMD vectorization efficiency.
+This repository provides nonlinear filtering implementations in **portable C++20 + Eigen**, with **optional** SIMD and GPU acceleration (ARM NEON/SVE2 intrinsics, Vulkan compute shaders, NVIDIA CUDA). The filters themselves are architecture-neutral: `Common/include/FilterMath.h` resolves the available backend tiers at compile time and falls back to plain Eigen, so the library builds and produces equivalent results on **any** C++20 target — with no accelerator backend at all. All implementations use single-precision floating point (`float`), which suits SIMD vectorization where it is available.
 
 ### What's Included
 
 - **5 Filtering Methods**: EKF, UKF, SRUKF, PKF, RBPKF
-- **Fixed-Lag Smoothers**: Rauch-Tung-Striebel (RTS) backward pass and ancestry-based smoothing
-- **Comprehensive Benchmarks**: 4 challenging test problems with full metrics (10D coupled oscillators, Van der Pol, bearing-only tracking, reentry vehicle)
-- **Hardware Acceleration**: NEON dense linear algebra + Vulkan particle operations + CUDA GPU acceleration via [OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA) (OptMathKernels), pinned to release tag **[v0.5.17](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.17)**
+- **Smoothers**: fixed-lag RTS, full-interval (batch) RTS with optional iteration (an IEKS for the EKF), and ancestry-based particle smoothing
+- **Comprehensive Benchmarks**: 4 test problems in the default suite with full metrics (10D coupled oscillators, Van der Pol, bearing-only tracking, reentry vehicle)
+- **Optional Acceleration**: NEON/SVE2 dense linear algebra, Vulkan compute, and CUDA via [OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA) (OptMathKernels), consumed as a sibling source tree built with `add_subdirectory` (currently **v0.6.3**; no pinned release tag)
 
-### Platform Support
+---
 
-| Platform | Acceleration | Status |
-|----------|--------------|--------|
-| ARM aarch64 (Pi 5, Orange Pi) | NEON + SVE2 + Vulkan | **Full Support** |
-| x86_64 Linux | Vulkan + OpenMP + Eigen | **Full Support** |
-| NVIDIA GPU (CUDA 12.x / 13.x) | cuBLAS GEMM + GPU Particle Filter | **Full Support** (SM 75–120) |
+## Portability
 
-> **Note**: CUDA 12.x covers Turing through Hopper (SM 75–90). CUDA 13.x adds Blackwell — including consumer RTX 50-series (**SM 120**, e.g. RTX 5070/5080/5090). Verified on an RTX 5070 Ti (SM 120) with CUDA 13.1; also rebuilt cleanly with CUDA 13.0.88 on Linux 6.17 NVIDIA kernel (multi-arch default). To build for your exact GPU, configure with `-DCMAKE_CUDA_ARCHITECTURES=native -DOPTMATH_CUDA_NATIVE=ON`. See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) for details.
+The filters are portable C++; only the backends are architecture-specific, and every
+backend is optional. The build detects the **target** architecture
+(`CMAKE_SYSTEM_PROCESSOR`, cross-compile aware) and reports it at configure time:
+
+```
+-- Target architecture: ARM64
+-- SIMD backends: NEON=ON SVE2=ON (SVE2 sources are skipped unless the CPU implements it)
+-- Native CPU tuning: -mcpu=native
+```
+
+ARM-only backends are never forced onto a non-ARM target; on any other architecture
+the same configure step reports `SIMD backends: none for <arch> - filter math uses the
+Eigen fallback path` and the build proceeds normally.
+
+### Acceleration Tiers (all optional)
+
+| Backend | Where it applies | Default | Notes |
+|---------|------------------|---------|-------|
+| **Eigen** (baseline) | every C++20 target | always | The fallback. Correct and complete on its own — no other tier is required. |
+| **NEON** | ARM (`aarch64`/`armv8`, `arm`) | ON for ARM targets | Cholesky, GEMM, mat-vec, SPD solve. `-DNLF_ENABLE_NEON=OFF` to disable. |
+| **SVE2** | ARM CPUs that implement SVE2 (Cortex-A720+, e.g. Orange Pi 5/6) | ON for ARM targets | Cache-blocked GEMM with FCMA/I8MM. Sources are skipped on ARM CPUs without SVE2 (such as the Pi 5's Cortex-A76), so leaving it ON on a non-SVE2 ARM board is harmless. |
+| **Vulkan** | any target with a Vulkan 1.2+ SDK/driver | ON, auto-skipped with no SDK | Compute backend in OptMathKernels. See the note under [Features](#hardware-optimization) about which operations actually reach the GPU. |
+| **CUDA** | NVIDIA GPUs, SM 75–120 | auto-detected via `nvcc` | cuBLAS GEMM + GPU particle filter. CUDA 12.x = SM 75–90; 13.x adds Blackwell (SM 100/120). |
+
+### Verified: the library does not need a SIMD backend
+
+A build configured with **every** SIMD tier off and portable codegen —
+`-DNLF_ENABLE_NEON=OFF -DNLF_ENABLE_SVE2=OFF -DNLF_ENABLE_NATIVE_ARCH=OFF`, i.e. what a
+brand-new architecture gets on day one — compiles, runs, and passes **30/30** CTest
+cases, exactly as the NEON build does. Comparing benchmark RMSE between the two builds:
+
+| Benchmark problem | Eigen-only vs. NEON |
+|-------------------|---------------------|
+| Coupled Oscillators 10D | bit-identical |
+| Van der Pol 2D | bit-identical |
+| Bearing-Only 4D | 0.0008% difference |
+| Reentry 6D | 0.02% difference |
+
+The two non-zero deltas are pure floating-point association (Eigen's summation order
+vs. NEON's), not a behavioural difference. Accuracy is a property of the filters, not
+of the backend; **only wall-clock timings change.**
+
+> **Note on CUDA architectures**: CUDA 12.x covers Turing through Hopper (SM 75–90). CUDA 13.x adds Blackwell — including consumer RTX 50-series (**SM 120**, e.g. RTX 5070/5080/5090). To build for your exact GPU, configure with `-DCMAKE_CUDA_ARCHITECTURES=native -DOPTMATH_CUDA_NATIVE=ON`. See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) for details.
 
 ---
 
@@ -60,7 +99,7 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 
 - **Method**: First-order Taylor series approximation
 - **Requirements**: Explicit Jacobian matrices
-- **Smoothing**: RTS fixed-lag backward pass
+- **Smoothing**: RTS fixed-lag backward pass (`EKF/include/EKFFixedLag.h`) + full-interval iterated RTS / IEKS (`EKF/include/EKFSmoother.h`)
 - **Best For**: Mildly nonlinear systems, fast prototyping
 - **Location**: `EKF/`
 
@@ -70,10 +109,10 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 
 - **Method**: Deterministic sampling via Merwe scaled unscented transform
 - **Parameters**: Dimension-adaptive (alpha=1.0, beta=2.0, kappa=3-n)
-- **Smoothing**: RTS with cross-covariance tracking
+- **Smoothing**: RTS with cross-covariance tracking — fixed-lag (`UKF/include/UnscentedFixedLagSmoother.h`) + full-interval iterated (`UKF/include/UKFSmoother.h`)
 - **Best For**: Highly nonlinear systems where Jacobians are unavailable or expensive
 - **Location**: `UKF/`
-- **Optimization**: SVE2/NEON-accelerated GEMM, Cholesky, SPD solve via FilterMath dispatch
+- **Optimization**: GEMM, Cholesky and SPD solve go through the FilterMath dispatch — SVE2/NEON where present, Eigen otherwise
 
 ### 3. Square Root UKF (SRUKF)
 
@@ -86,7 +125,7 @@ This repository provides nonlinear filtering implementations optimized for **ARM
   - Innovation gating prevents catastrophic updates
   - Safe Cholesky downdate with automatic fallback to full recomputation
 - **Best For**: Mission-critical, long-duration, weak observability systems
-- **Location**: `UKF/include/SRUKF.h`
+- **Location**: `UKF/include/SRUKF.h`; smoothers in `UKF/include/SRUKFFixedLagSmoother.h` (fixed-lag) and `UKF/include/SRUKFSmoother.h` (full-interval, iterated)
 
 ### 4. Particle Filter (PKF)
 
@@ -97,7 +136,7 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 - **Smoothing**: Ancestry-based fixed-lag trajectory reconstruction
 - **Best For**: Non-Gaussian noise, multimodal distributions
 - **Location**: `PKF/`
-- **Optimization**: Vulkan GPU acceleration for N > 100 particles, OpenMP parallel propagation
+- **Optimization**: OpenMP parallel propagation; CUDA particle context auto-enabled at N >= 256 when built with CUDA. A Vulkan noise-addition path exists but rarely engages — see the [Vulkan note](#hardware-optimization) under Features.
 
 ### 5. Rao-Blackwellized Particle Filter (RBPKF)
 
@@ -113,17 +152,29 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 
 ## Benchmark Results
 
-Four challenging problems tested with UKF, SRUKF, and fixed-lag smoothers. Benchmarks run through the FilterMath dispatch layer (CUDA cuBLAS / SVE2 / NEON / Eigen, selected at runtime by platform).
+Four problems tested with UKF, SRUKF, and fixed-lag smoothers. Benchmarks run through the FilterMath dispatch layer, which selects whatever backend the build provides (CUDA cuBLAS / SVE2 / NEON / Eigen) and computes the same result either way.
 
-> **Latest run**: 8 July 2026 on **Ubuntu 26.04 LTS x86_64**, **NVIDIA GeForce RTX 5070 Ti Laptop GPU (Blackwell, SM 120)** with **CUDA 13.1**, Eigen 3.4, Vulkan 1.4, against **OptMathKernels v0.5.17** (pinned release tag). All **25/25** CTest cases pass (9 filter tests + 16 OptimizedKernels GPU/SIMD tests, including the CUDA kernel suite on the Blackwell GPU and the Vulkan suites, which now auto-select the discrete RTX 5070 Ti).
+> **How to read these numbers.** **RMSE, NEES and divergence counts are
+> backend- and host-independent** — they reproduce on any machine, with or without a
+> SIMD/GPU backend (see [Portability](#portability): an Eigen-only build is
+> bit-identical on two of the four problems and within 0.02% on the others).
+> **Wall-clock timings are host-specific and do not transfer.** Every timing below is
+> therefore attributed to the machine that produced it. No single machine is "the"
+> reference; the suite is run on several.
 
-> **Host note**: the **RMSE / NEES / divergence** figures are backend-independent
-> and reproduce on any platform (the FilterMath dispatch selects CUDA / SVE2 /
-> NEON / Eigen but computes the same result). The **25/25** count and the wall-clock
-> **timings** are specific to that x86_64 + CUDA reference host: a CPU-only or ARM
-> host runs the Eigen/NEON path (no CUDA suite; the count and per-step times differ)
-> and still reproduces the accuracy numbers. Build and CTest are exercised on ARM
-> (aarch64) as well as the x86_64 reference host.
+**Hosts used below:**
+
+| Host | Configuration | Used for |
+|------|---------------|----------|
+| **A** — x86_64 | Ubuntu 26.04 LTS, RTX 5070 Ti Laptop GPU (Blackwell, SM 120), CUDA 13.1, Eigen 3.4, Vulkan 1.4 | timings in the summary table (run 8 July 2026) |
+| **B** — ARM aarch64 | Raspberry Pi 5 (Cortex-A76, 4 cores), NEON + Vulkan (V3D), no CUDA, no SVE2 | accuracy re-verification, portability comparison (run 14 July 2026) |
+
+Accuracy figures below were produced on host A and re-verified unchanged on host B.
+CTest is **30/30** on both (12 filter/benchmark tests registered by this repo + 18
+OptimizedKernels GPU/SIMD tests). The exact dependency suite varies with the build:
+host A additionally exercises the CUDA kernel tests and selects the discrete GPU for
+the Vulkan suites; host B runs the same Vulkan suites on the VideoCore V3D and skips
+CUDA.
 
 Reproduce everything below with:
 
@@ -134,13 +185,22 @@ source ../.nlfvenv/bin/activate                          # Python venv created b
 python3 ../scripts/plot_benchmarks.py .                  # writes the PNGs shown here
 ```
 
+`benchmark_results.csv` columns (one header row):
+
+```
+Filter,Problem,RMSE_Overall,RMSE_Smoothed_Overall,Median_NEES,Pct_In_Bounds,NEES_Valid,NEES_Total,Avg_Step_Time_ms,Total_Time_ms,Convergence_Time,Num_Divergences
+```
+
+`Convergence_Time` is left **empty** when the filter never met the convergence
+threshold — missing data reads as missing, in pandas and in a spreadsheet.
+
 ### Summary Across All Problems
 
 **Estimation accuracy** — filtered vs. smoothed RMSE and filter consistency (median NEES):
 
 ![RMSE / NEES comparison](docs/images/benchmark_rmse_comparison.png)
 
-**Computational cost** — per-step and total wall-clock time (x86_64 + Eigen path):
+**Computational cost** — per-step and total wall-clock time (**host A**; re-run the suite to get your own):
 
 ![Timing comparison](docs/images/benchmark_timing_comparison.png)
 
@@ -148,9 +208,18 @@ python3 ../scripts/plot_benchmarks.py .                  # writes the PNGs shown
 
 ![Convergence comparison](docs/images/benchmark_convergence_comparison.png)
 
-Consolidated metrics from the latest run (`benchmark_results.csv`):
+> **Caveat on the convergence panel**: `compute_convergence_time()`
+> (`Benchmarks/include/BenchmarkRunner.h`) uses a fixed **0.5-unit absolute** error
+> threshold, which is not meaningful for problems whose error scale is far larger —
+> Bearing-Only (~64) and Reentry (~369) legitimately never reach it. Those rows now
+> report an **empty** `Convergence_Time` cell and print "did not converge" rather
+> than silently emitting the final timestamp as if it were a measurement. Read that
+> panel for the Coupled-Oscillator and Van der Pol rows only.
 
-| Problem | Filter | RMSE | Smoothed RMSE | NEES median | In 95% | Avg step | Total | Div |
+Consolidated metrics (`benchmark_results.csv`). RMSE / NEES / Div are
+host-independent; **Avg step** and **Total** are from **host A**:
+
+| Problem | Filter | RMSE | Smoothed RMSE | NEES median | In 95% | Avg step (host A) | Total (host A) | Div |
 |---------|--------|-----:|--------------:|------------:|-------:|---------:|------:|----:|
 | Coupled Osc 10D | UKF | 1.457 | — | 9.89 | 94.5% | 0.0076 ms | 38.2 ms | 0 |
 | Coupled Osc 10D | SRUKF | 1.457 | — | 9.89 | 94.5% | 0.0082 ms | 41.5 ms | 0 |
@@ -159,9 +228,9 @@ Consolidated metrics from the latest run (`benchmark_results.csv`):
 | Van der Pol 2D | UKF | 0.468 | — | 1.14 | 95.9% | 0.00039 ms | 0.81 ms | 0 |
 | Van der Pol 2D | SRUKF | 0.466 | — | 1.14 | 96.0% | 0.00027 ms | 0.57 ms | 0 |
 | Van der Pol 2D | SRUKF+Smoother | 0.466 | **0.430** | 1.14 | 96.0% | 0.0050 ms | 10.2 ms | 0 |
-| Bearing-Only 4D | UKF | 63.81 | — | 3.77 | 99.6% | 0.00052 ms | 0.16 ms | 176 |
-| Bearing-Only 4D | SRUKF | 64.17 | — | 3.77 | 99.6% | 0.00046 ms | 0.15 ms | 175 |
-| Bearing-Only 4D | SRUKF+Smoother | 64.17 | **52.03** | 3.77 | 99.6% | 0.0108 ms | 3.25 ms | 175 |
+| Bearing-Only 4D | UKF | 63.81 | — | 3.77 | 99.6% | 0.00052 ms | 0.16 ms | 0 |
+| Bearing-Only 4D | SRUKF | 64.17 | — | 3.77 | 99.6% | 0.00046 ms | 0.15 ms | 0 |
+| Bearing-Only 4D | SRUKF+Smoother | 64.17 | **52.03** | 3.77 | 99.6% | 0.0108 ms | 3.25 ms | 0 |
 | Reentry 6D | UKF | 369.1 | — | 5.00 | 95.9% | 0.0024 ms | 0.72 ms | 0 |
 | Reentry 6D | SRUKF | 369.2 | — | 4.99 | 95.6% | 0.0024 ms | 0.73 ms | 0 |
 | Reentry 6D | SRUKF+Smoother | 369.2 | **236.8** | 4.99 | 95.6% | 0.0176 ms | 5.30 ms | 0 |
@@ -371,26 +440,38 @@ Before deploying any Kalman filter, verify:
 
 ### Hardware Optimization
 
-- **FilterMath Dispatch Layer** (`Common/include/FilterMath.h`): Unified API that automatically selects the best backend at runtime:
+- **FilterMath Dispatch Layer** (`Common/include/FilterMath.h`): Unified API that selects the best tier the build provides:
   - **GEMM**: CUDA cuBLAS → SVE2 cache-blocked → NEON blocked → Eigen
   - **Cholesky / Inverse / Solve**: NEON accelerated → Eigen LDLT fallback
   - **Kalman Gain**: SPD solve (avoids explicit matrix inverse for O(n²) vs O(n³))
-  - **Non-ARM platforms**: Falls through to Eigen (or CUDA if available)
-- **FilterMathGPU** (`Common/include/FilterMathGPU.h`): GPU-specific acceleration:
-  - **GPUBufferPool**: Reusable device allocations to minimize PCIe overhead
-  - **GPUSigmaContext\<NX\>**: GPU-accelerated sigma point operations for UKF/SRUKF
+  - **Any platform with no backend**: falls through to Eigen — always available, always correct
 - **Particle Filter GPU** (`PKF/include/particle_filter_gpu.hpp`): CUDA particle filter:
   - **GPUParticleContext\<NX\>**: Manages particles/weights on GPU
   - GPU log-sum-exp weight normalization
   - GPU systematic/stratified resampling
-  - Auto-enable for N >= 256 particles
+  - Auto-enable for N >= 256 particles (CUDA builds only; a no-CUDA build always uses the CPU path)
 - **ARM NEON Dense Linear Algebra**: Cholesky, GEMM, mat-vec multiply, SPD solve via [OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)
-- **ARM SVE2**: Cache-blocked GEMM with FCMA and I8MM on Cortex-A720+ (Orange Pi 5/6)
-- **Vulkan Compute**: Particle filter noise addition parallelized on GPU (Mali-G720, VideoCore VII, discrete GPUs). As of OptMathKernels v0.5.14, device selection prefers a **discrete GPU with a compute queue** over integrated/CPU fallbacks — on multi-GPU hosts the discrete card (e.g. RTX 5070 Ti) is chosen and logged at init.
+- **ARM SVE2**: Cache-blocked GEMM with FCMA and I8MM on Cortex-A720+ (e.g. Orange Pi 5/6). Not present on the Cortex-A76 (Raspberry Pi 5), where the SVE2 sources are simply skipped.
+- **Vulkan Compute**: Device selection prefers a **discrete GPU with a compute queue** over integrated/CPU fallbacks, and logs the choice at init.
 - **Graceful Fallback**: CUDA → SVE2 → NEON → Eigen with jitter + retry for numerical robustness
-- **Single Precision**: Consistent use of `float` for SIMD vectorization
+- **Single Precision**: Consistent use of `float`, which vectorizes well where SIMD is available
 
-> **CUDA Status**: Active for SM 75–90 (CUDA 12.x) and SM 75–120 incl. Blackwell RTX 50-series (CUDA 13.x). Verified on RTX 5070 Ti / SM 120 with CUDA 13.1 (see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md))
+> **Vulkan reality check**: the particle filter contains a Vulkan noise-addition path
+> (gated at `N > 100` in `PKF/include/particle_filter.hpp`), but OptMathKernels routes
+> elementwise operations below **2^20 elements** to the CPU
+> (`OPTMATH_VK_ELTWISE_MIN`, `src/vulkan/vulkan_backend.cpp`). The flattened buffer is
+> `N*NX` floats, so a 3-state model would need ~350,000 particles before anything
+> reaches the GPU. At realistic particle counts this path computes on the CPU. The
+> threshold is deliberate: on the tested integrated GPUs, dispatch overhead exceeds the
+> work for memory-bound elementwise kernels. Treat Vulkan here as available
+> infrastructure, not as an active accelerator for typical particle counts.
+
+> **FilterMathGPU status**: `Common/include/FilterMathGPU.h` (`GPUBufferPool`,
+> `GPUSigmaContext<NX>`) is **experimental and not yet wired in** — no filter currently
+> includes it, and the UKF/SRUKF paths go through `FilterMath.h`. It ships as a public
+> header for downstream experimentation only.
+
+> **CUDA Status**: Active for SM 75–90 (CUDA 12.x) and SM 75–120 incl. Blackwell RTX 50-series (CUDA 13.x). See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md).
 
 ### Software Quality
 
@@ -405,16 +486,16 @@ Before deploying any Kalman filter, verify:
 
 ### Required
 
-- **C++20 Compiler**: GCC 10+, Clang 11+
-- **Eigen3**: Linear algebra (3.4+, fetched automatically if not found)
-- **CMake**: Build system (3.14+)
+- **C++20 Compiler**: GCC 10+, Clang 11+ (MSVC builds use `/O2`; no native-tuning flag is applied)
+- **Eigen3**: Linear algebra (3.4+, fetched automatically if not found). This is the only hard numerical dependency — everything below Eigen in the dispatch chain is optional.
+- **CMake**: Build system (**3.18+**). The root project declares 3.14, but the required OptMathKernels dependency is built via `add_subdirectory` and itself requires 3.18, so 3.18 is the effective floor.
 - **Python 3**: (3.10+) For visualization scripts; a virtual environment is created automatically during the build
-- **[OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)** (OptMathKernels): NEON/SVE2/Vulkan/CUDA acceleration. **Required as a sibling directory** next to this repo and built directly from its **latest `main`** working tree (no pinned tag). If it is missing, `./bootstrap.sh` offers to clone it over HTTPS and build for you, or configure with `-DAUTO_CLONE_DEPS=ON`. See [Build Instructions](#build-instructions).
+- **[OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)** (OptMathKernels, currently **v0.6.3**): hosts the optional NEON/SVE2/Vulkan/CUDA kernels. **Required as a sibling directory** next to this repo and built via `add_subdirectory` directly from its **latest `main`** working tree (no pinned release tag). If it is missing, `./bootstrap.sh` offers to clone it over HTTPS and build for you, or configure with `-DAUTO_CLONE_DEPS=ON`. See [Build Instructions](#build-instructions).
 
 ### Optional
 
-- **ARM NEON/SVE2**: Automatic on ARM aarch64 platforms
-- **Vulkan SDK + glslang-tools**: For GPU-accelerated particle filter (Vulkan 1.3+); `glslang-tools` provides `glslangValidator` to compile GLSL shaders to SPIR-V
+- **ARM NEON/SVE2**: Enabled by default on ARM targets only (`NLF_ENABLE_NEON` / `NLF_ENABLE_SVE2`); never forced onto a non-ARM target
+- **Vulkan SDK + glslang-tools**: For the Vulkan compute backend (**Vulkan 1.2+** — the backend requests `VK_API_VERSION_1_2`); `glslang-tools` provides `glslangValidator` to compile GLSL shaders to SPIR-V. Auto-skipped when no SDK is found.
 - **NVIDIA CUDA Toolkit**: For GPU-accelerated GEMM and particle filter (12.x supports SM 75–90; 13.x adds Blackwell, incl. RTX 50-series SM 120). Ensure `nvcc` is on `PATH` (e.g. `export PATH=/usr/local/cuda/bin:$PATH`) so CMake detects it.
 - **OpenMP**: For parallel particle filter
 
@@ -455,7 +536,7 @@ nvcc --version          # should print the toolkit version
 nvidia-smi              # should list your GPU + driver
 ```
 
-> CUDA 13.x ships `nvcc` that accepts host GCC up to 15. The build forwards `-march=native` to the CUDA host compiler via `-Xcompiler`, so the C++ and CUDA translation units stay ABI-consistent (mismatched Eigen alignment between them otherwise corrupts the heap).
+> CUDA 13.x ships `nvcc` that accepts host GCC up to 15. When native tuning is active (`NLF_ENABLE_NATIVE_ARCH=ON`, the default), the build forwards the same probed arch flag to the CUDA host compiler via `-Xcompiler`, so the C++ and CUDA translation units stay ABI-consistent (on x86, mismatched Eigen alignment between them otherwise corrupts the heap).
 
 ---
 
@@ -498,6 +579,19 @@ make -j$(nproc)
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_COMPILER=""
 make -j$(nproc)
 
+# Portable / redistributable binary, or a brand-new architecture: turn off every
+# SIMD tier and native-CPU tuning. The filters fall back to Eigen and still pass
+# 30/30 ctest (see Portability).
+cmake .. -DCMAKE_BUILD_TYPE=Release \
+         -DNLF_ENABLE_NEON=OFF -DNLF_ENABLE_SVE2=OFF -DNLF_ENABLE_NATIVE_ARCH=OFF
+make -j$(nproc)
+
+# Cross-compiling: pass your toolchain file. The target arch comes from
+# CMAKE_SYSTEM_PROCESSOR, and NLF_ENABLE_NATIVE_ARCH defaults to OFF automatically
+# (a "native" flag would otherwise describe the BUILD host, not the target).
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=/path/to/toolchain.cmake
+make -j$(nproc)
+
 # Offline / CI build: skip the plotting Python venv (no PyPI access needed). Point
 # -DOPTMATH_DIR at the sibling clone if it is not at the default ../ location.
 cmake .. -DCMAKE_BUILD_TYPE=Release -DNLF_BUILD_PYTHON_VENV=OFF \
@@ -514,10 +608,16 @@ ctest --output-on-failure
 
 # Or run individual tests
 ./EKF/ekf_test
+./EKF/ekf_smoother_test
 ./UKF/ukf_test
+./UKF/ukf_smoother_test
 ./UKF/srukf_test
+./UKF/srukf_angular_wrap_test
+./UKF/srukf_smoother_test
 ./PKF/pkf_test
+./PKF/pkf_example
 ./RBPKF/test_rbpf_basic
+./RBPKF/example_rbpf_ctrv
 
 # Run benchmarks
 ./Benchmarks/run_benchmarks
@@ -538,13 +638,18 @@ python3 ../scripts/plot_benchmarks.py .
 
 | Option | Description |
 |--------|-------------|
+| `-DNLF_ENABLE_NEON=OFF` | Do not build the ARM NEON kernels (default: ON for ARM targets, OFF everywhere else). Filter math falls back to Eigen |
+| `-DNLF_ENABLE_SVE2=OFF` | Do not build the ARM SVE2 kernels (default: ON for ARM targets). SVE2 sources are skipped anyway on ARM CPUs that lack SVE2 |
+| `-DNLF_ENABLE_VULKAN=OFF` | Do not build the Vulkan compute backend (default: ON; auto-skipped when no SDK is found) |
+| `-DNLF_ENABLE_NATIVE_ARCH=OFF` | Do not tune for the building machine's CPU. Default ON, and automatically OFF when cross-compiling. Turn OFF for portable/redistributable binaries. When ON, the build *probes* for `-mcpu=native` (ARM) or `-march=native` (x86) and degrades to portable codegen if neither compiles cleanly; MSVC has no equivalent and uses `/O2` |
+| `-DCMAKE_TOOLCHAIN_FILE=<path>` | Cross-compile. Target arch is read from `CMAKE_SYSTEM_PROCESSOR`; native tuning auto-disables |
 | `-DCMAKE_CUDA_COMPILER=""` | Disable CUDA (e.g., if toolkit is not installed or causes issues) |
 | `-DCMAKE_CUDA_ARCHITECTURES=native` | Build CUDA code for the detected GPU only. Optional on CUDA 13.x (default list already includes Blackwell SM 100/120); useful to shrink build time |
 | `-DOPTMATH_CUDA_NATIVE=ON` | Make the OptimizedKernels dependency honor `native` instead of its default multi-arch list |
 | `-DOPTMATH_DIR=<path>` | Path to the required OptimizedKernels sibling source tree (default `../OptimizedKernelsForRaspberryPi5_NvidiaCUDA`). Built directly from its local working tree (latest `main`) |
 | `-DAUTO_CLONE_DEPS=ON` | If `OPTMATH_DIR` is missing, clone it (latest `main`) over HTTPS instead of failing (default `OFF`). `./bootstrap.sh` does this interactively |
 | `-DNLF_BUILD_PYTHON_VENV=OFF` | Skip creating the plotting Python venv (the C++ build then needs no Python/PyPI — for offline/CI) |
-| `-DCMAKE_BUILD_TYPE=Release` | Optimized build with `-O3 -march=native` (forwarded to nvcc's host compiler via `-Xcompiler` for ABI consistency) |
+| `-DCMAKE_BUILD_TYPE=Release` | Optimized build: `-O3` (or `/O2` on MSVC) plus native tuning when `NLF_ENABLE_NATIVE_ARCH` is ON, forwarded to nvcc's host compiler via `-Xcompiler` for ABI consistency. Release flags are applied via `$<CONFIG:Release>` generator expressions, so multi-config generators (Ninja Multi-Config, Visual Studio, Xcode) get them too |
 | `-DCMAKE_BUILD_TYPE=Debug` | Debug build with symbols |
 
 ### Build Outputs
@@ -552,8 +657,12 @@ python3 ../scripts/plot_benchmarks.py .
 | Target | Description |
 |--------|-------------|
 | `EKF/ekf_test` | EKF with fixed-lag smoother on nonlinear oscillator |
+| `EKF/ekf_smoother_test` | EKF full-interval RTS / IEKS smoother regression |
 | `UKF/ukf_test` | UKF with fixed-lag smoother on drag ball model |
+| `UKF/ukf_smoother_test` | UKF full-interval RTS smoother regression |
 | `UKF/srukf_test` | SRUKF with fixed-lag smoother on drag ball model |
+| `UKF/srukf_angular_wrap_test` | SRUKF angular-observation (wrap) regression |
+| `UKF/srukf_smoother_test` | SRUKF full-interval RTS smoother regression |
 | `PKF/pkf_test` | Particle filter unit tests |
 | `PKF/pkf_example` | Particle filter on Lorenz-63 attractor |
 | `RBPKF/test_rbpf_basic` | RBPF unit tests |
@@ -675,7 +784,7 @@ Modern-Computational-Nonlinear-Filtering/
 ├── Common/                     # Shared interfaces
 │   └── include/
 │       ├── FilterMath.h        # CUDA/SVE2/NEON/Eigen dispatch layer
-│       ├── FilterMathGPU.h     # GPU buffer management & sigma point context
+│       ├── FilterMathGPU.h     # experimental, not included by any filter
 │       ├── StateSpaceModel.h   # Base model for UKF/SRUKF
 │       ├── SystemModel.h       # Base model for EKF
 │       └── FileUtils.h         # File I/O utilities
@@ -683,12 +792,15 @@ Modern-Computational-Nonlinear-Filtering/
 ├── EKF/                        # Extended Kalman Filter
 │   ├── include/
 │   │   ├── EKF.h
-│   │   ├── EKFFixedLag.h
+│   │   ├── EKFFixedLag.h       # fixed-lag RTS
+│   │   ├── EKFSmoother.h       # full-interval RTS / iterated (IEKS)
 │   │   ├── BallTossModel.h
 │   │   └── NonlinearOscillator.h
 │   ├── src/
 │   │   ├── EKF.cpp
 │   │   └── EKFFixedLag.cpp
+│   ├── tests/
+│   │   └── test_ekf_smoother.cpp
 │   └── main.cpp
 │
 ├── UKF/                        # Unscented Kalman Filters
@@ -698,7 +810,13 @@ Modern-Computational-Nonlinear-Filtering/
 │   │   ├── SigmaPoints.h       # Sigma point generation
 │   │   ├── UnscentedFixedLagSmoother.h
 │   │   ├── SRUKFFixedLagSmoother.h
+│   │   ├── UKFSmoother.h       # full-interval RTS / iterated
+│   │   ├── SRUKFSmoother.h     # full-interval square-root RTS / iterated
 │   │   └── DragBallModel.h     # Example model
+│   ├── tests/
+│   │   ├── test_ukf_smoother.cpp
+│   │   ├── test_srukf_smoother.cpp
+│   │   └── test_srukf_angular_wrap.cpp
 │   ├── main.cpp                # UKF + smoother test
 │   └── main_srukf.cpp          # SRUKF + smoother test
 │
@@ -733,7 +851,8 @@ Modern-Computational-Nonlinear-Filtering/
 │
 ├── Benchmarks/                 # Comprehensive test suite
 │   ├── include/
-│   │   ├── BenchmarkProblems.h # 4 test problems
+│   │   ├── BenchmarkProblems.h # 5 models (4 in the default suite; Lorenz96
+│   │   │                       #   is provided but not run)
 │   │   └── BenchmarkRunner.h   # Metrics framework
 │   └── src/
 │       └── run_benchmarks.cpp
@@ -741,6 +860,8 @@ Modern-Computational-Nonlinear-Filtering/
 ├── scripts/                    # Visualization
 │   ├── simple_plot_benchmarks.py
 │   ├── plot_benchmarks.py
+│   ├── plot_optimized.py
+│   ├── plot_results.py
 │   ├── pkf_plot_results.py
 │   └── ukf_plot_results.py
 │
@@ -800,7 +921,7 @@ MIT License - see LICENSE file for details.
 
 ---
 
-**Version**: 3.3.0
-**Last Updated**: 8 July 2026
-**OptMathKernels**: pinned to release tag [v0.5.17](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.17)
-**Platform**: ARM aarch64 (Raspberry Pi 5, Orange Pi 5/6) + x86_64 (Vulkan + CUDA + Eigen) + NVIDIA GPU (SM 75–120 via CUDA 12.x/13.x; Blackwell RTX 50-series verified on SM 120 / CUDA 13.1)
+**Version**: 3.4.0
+**Last Updated**: 14 July 2026
+**OptMathKernels**: sibling source tree built via `add_subdirectory` (no pinned tag); currently v0.6.3
+**Portability**: portable C++20 + Eigen on any target; optional NEON/SVE2 (ARM), Vulkan (1.2+), and CUDA (SM 75–120 via CUDA 12.x/13.x) backends

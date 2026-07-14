@@ -1,13 +1,49 @@
 # Development Notes
 
+## Portability Model — Read This First
+
+This is a **portable C++20 / Eigen filtering library**. The filters themselves
+(EKF, UKF, SRUKF, PKF, RBPF and their smoothers) contain no architecture-specific
+code and build and run correctly on any target with a C++20 compiler and Eigen.
+
+Everything below that tier is an **optional accelerator with an Eigen fallback**:
+
+| Tier | Requires | Selected by | Fallback |
+|------|----------|-------------|----------|
+| CUDA (cuBLAS GEMM, GPU particle filter) | NVIDIA GPU + toolkit | auto-detect; `OPTMATH_USE_CUDA` | next tier |
+| Vulkan compute | Vulkan SDK/loader | `NLF_ENABLE_VULKAN` (default ON, auto-skipped with no SDK) | next tier |
+| SVE2 | ARMv9 CPU that implements it | `NLF_ENABLE_SVE2` (default ON on ARM) | next tier |
+| NEON | ARM (AArch64/ARM32) | `NLF_ENABLE_NEON` (default ON on ARM) | Eigen |
+| **Eigen** | nothing | always available | — |
+
+`Common/include/FilterMath.h` makes the matching decision at **compile time**
+(`FILTERMATH_ARM64`, `FILTERMATH_HAS_SVE2`, `OPTMATH_USE_CUDA`) and falls through
+to Eigen, so no tier is ever load-bearing for correctness.
+
+**Two rules for this document:**
+
+1. **Never present one machine as "the" host.** Development and verification have
+   happened on at least two very different machines (an aarch64 Raspberry Pi 5 and
+   an x86_64 + RTX 5070 Ti workstation); neither is canonical.
+2. **Attribute every measured number to the host that produced it.** RMSE/NEES are
+   backend-independent and reproduce anywhere (verified — see "Backend portability"
+   below). **Timings are host-specific and do not transfer.**
+
+---
+
 ## OptMathKernels Dependency — Sibling-Directory / Latest-`main` Policy
 
 **Date**: 2026-07-10 (supersedes the earlier FetchContent tag-pinning policy)
 
-The compute backends (NEON / SVE2 / Vulkan / CUDA) live in the external
+The optional NEON / SVE2 / Vulkan / CUDA compute backends live in the external
 [OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)
-(OptMathKernels) project, dispatched to through `Common/include/FilterMath.h` /
-`FilterMathGPU.h`.
+(OptMathKernels) project, dispatched to through `Common/include/FilterMath.h`.
+
+> `Common/include/FilterMathGPU.h` also targets the optmath CUDA API, but it is
+> **currently included by no translation unit** (`grep -rn '#include.*FilterMathGPU'`
+> → 0 hits) and therefore never compiled. Treat it as dead code pending removal or
+> wiring up; do not cite it as a live dispatch path. The live GPU path is
+> `PKF/include/particle_filter_gpu.hpp`, included by `PKF/include/particle_filter.hpp`.
 
 ### Provisioning policy (current)
 
@@ -48,14 +84,15 @@ full `git diff v0.5.13..v0.5.15`:
 
 | Change | File | Impact on this project |
 |--------|------|------------------------|
-| **Discrete-GPU preference in Vulkan device selection** | `src/vulkan/vulkan_backend.cpp` | Behavioral, positive. `VulkanContext::init()` now scores physical devices (discrete > integrated > virtual > CPU) and requires a compute queue, instead of blindly taking `devices[0]`. On this dual-GPU x86_64 box it now logs and selects the RTX 5070 Ti for Vulkan compute. No API change. |
+| **Discrete-GPU preference in Vulkan device selection** | `src/vulkan/vulkan_backend.cpp` | Behavioral, positive. `VulkanContext::init()` now scores physical devices (discrete > integrated > virtual > CPU) and requires a compute queue, instead of blindly taking `devices[0]`. On the dual-GPU x86_64 reference host it now logs and selects the RTX 5070 Ti for Vulkan compute. No API change. |
 | Per-source documentation coverage | `src/vulkan/vulkan_backend.cpp`, `src/platform/platform.cpp` | None — comments only. |
 | x86_64 dual-GPU benchmark docs + release notes | `README.md` | None — upstream docs. |
 | Version bump 0.5.13 → 0.5.15 | `CMakeLists.txt` | None. |
 
 **Public API (`include/optmath/*.hpp`): zero changes** across v0.5.13..v0.5.15,
-so every `optmath::` call site in `FilterMath.h`, `FilterMathGPU.h`, and
-`particle_filter_gpu.hpp` is unaffected.
+so every `optmath::` call site in `FilterMath.h` and `particle_filter_gpu.hpp` is
+unaffected (`FilterMathGPU.h` has optmath call sites too, but is compiled by
+nothing — see the note at the top of this file).
 
 **Verification (2026-05-25):** reconfigured at `v0.5.15`, full rebuild, **24/24
 CTest pass**, Vulkan tests confirm `[Vulkan] Selected GPU: NVIDIA GeForce RTX
@@ -73,14 +110,14 @@ releases). The entire diff touches only 5 files — `CMakeLists.txt`, `README.md
 |--------|------|------------------------|
 | x86_64 desktop RTX 5090 benchmark numbers | `README.md` | None — upstream docs. |
 | **NEON `TrsvLower64x64` unit-test tolerance `1e-3 → 5e-3`** | `tests/test_neon_linalg.cpp` | None functional. float32 forward-substitution over 64 rows accumulates ~O(1e-3) round-off; the twin `TrsvUpper64x64` test already used `5e-3`. Removes a latent flaky-test edge; the `neon_trsv_lower` **kernel is unchanged**. |
-| Documented apt/build deps (`glslang-tools`/`glslc` for Vulkan SPIR-V shaders) | `requirements.txt` | None — build-doc only; already installed on this host (Vulkan suites compile & pass). |
+| Documented apt/build deps (`glslang-tools`/`glslc` for Vulkan SPIR-V shaders) | `requirements.txt` | None — build-doc only; already installed on the x86_64 reference host (Vulkan suites compile & pass there). |
 | Ignore `optenv/` venv and `*.spv` artifacts | `.gitignore` | None. |
 | Version bump 0.5.15 → 0.5.17 | `CMakeLists.txt` | None. |
 
 **Public API (`include/`) and compute backends (`src/`): zero changes** across
 v0.5.15..v0.5.17 (`git diff --name-only v0.5.15..v0.5.17 -- include/ src/` is
-empty). No `optmath::` call site in `FilterMath.h`, `FilterMathGPU.h`, or
-`particle_filter_gpu.hpp` is affected. **Note:** the upstream releases contain no
+empty). No `optmath::` call site in `FilterMath.h` or `particle_filter_gpu.hpp` is
+affected (nor in the uncompiled `FilterMathGPU.h`). **Note:** the upstream releases contain no
 MPI/OpenMPI — the parallelism story here remains OpenMP (CPU) + CUDA/Vulkan (GPU).
 
 **Verification (2026-07-08):** cleared `_deps/optimizedkernels-*`, reconfigured
@@ -89,6 +126,75 @@ pass** (≈ 5.8 s), benchmarks rerun and plots regenerated — RMSE/NEES figures
 numerically consistent with the prior run (the changed test path is not on the
 UKF/SRUKF CUDA/Eigen benchmark path; only 3 of 15 committed PNGs changed at the
 byte level, all cosmetic). Safe to adopt.
+
+### Audit: v0.5.17 → v0.6.3 (adopted 2026-07-14)
+
+The sibling tree now builds at **v0.6.3**. Unlike the previous two audits this is
+a large delta — `git diff --name-only v0.5.17..HEAD` is **39 files**, including six
+public `include/optmath/*.hpp` headers and ten `src/neon/*.cpp` backends. The
+headline upstream change is a **NEON GEMM rewrite** (`v0.6.3: neon_gemm sent any
+small-dimension GEMM down a naive path (20x)`).
+
+**Conclusion: the GEMM rewrite does not affect this project's numerics, and
+structurally cannot.** Two independent reasons, either sufficient:
+
+1. **NLF never enters the new blocked path.** `src/neon/neon_gemm_optimized.cpp`
+   defines `OPTMATH_GEMM_EIGEN_MAX = 80*80*80` and routes anything with
+   `M*N*K < 80³` straight to plain Eigen. NLF's largest *dynamic* GEMM is
+   `M*N*K = 216`, four orders of magnitude below the cutoff. Upstream verified the
+   handoff bit-exact against Eigen across 102,400 randomized cases.
+2. **Most filters never call `neon_gemm` at all.** UKF/SRUKF/RBPF-KF use
+   fixed-size Eigen types, which bind to `FilterMath.h`'s compile-time `gemm`
+   overload (the v3.3.0 fixed-size dispatch fast-path). Only the dynamic-`MatrixXf`
+   sites — EKF and the smoothers — reach the dispatch layer at all.
+
+Consistent with both: benchmark RMSE/NEES at v0.6.3 match the pre-bump figures
+(see "Backend portability" below, where the Eigen-only build reproduces them too).
+
+---
+
+## Backend portability — verified, not assumed
+
+**Date**: 2026-07-14. Host: aarch64 Raspberry Pi 5 (Cortex-A76, 4 cores), GCC 12,
+Eigen 3.4.0, OptMathKernels v0.6.3, no CUDA.
+
+To confirm the accelerators are genuinely optional, the suite was built twice on
+the same host and compared:
+
+```bash
+# accelerated (NEON)
+cmake -S . -B build-neon -DCMAKE_BUILD_TYPE=Release
+# portable Eigen-only fallback, no native CPU tuning
+cmake -S . -B build-portable -DCMAKE_BUILD_TYPE=Release \
+      -DNLF_ENABLE_NEON=OFF -DNLF_ENABLE_SVE2=OFF -DNLF_ENABLE_NATIVE_ARCH=OFF
+```
+
+Both configure, build and pass: **30/30 CTest with NEON, 29/29 Eigen-only.** The
+count differs by exactly one because `test_neon_fp16` — a *dependency* test — is
+not registered when NEON is off; no NLF test is lost.
+
+Benchmark accuracy, NEON build → Eigen-only build (same host, same seeds). Values
+are as reported by `run_benchmarks` (6 significant figures); "identical" below means
+agreement to every printed digit, which is what was checked — not a bit-level
+comparison of the raw floats:
+
+| Problem / filter | NEON | Eigen-only | Δ |
+|---|---:|---:|---|
+| CoupledOsc 10D (UKF & SRUKF) | 1.45666 | 1.45666 | **identical** |
+| CoupledOsc 10D smoothed | 1.14767 | 1.14767 | **identical** |
+| VanDerPol 2D (UKF) | 0.468053 | 0.468053 | **identical** |
+| VanDerPol 2D (SRUKF) | 0.46626 | 0.46626 | **identical** |
+| VanDerPol 2D smoothed | 0.429705 | 0.429705 | **identical** |
+| Bearing-Only 4D (UKF) | 63.8082 | 63.8084 | 0.0003% |
+| Bearing-Only 4D (SRUKF) | 64.1723 | 64.1723 | **identical** |
+| Reentry 6D (UKF) | 369.043 | 369.117 | 0.02% |
+| Reentry 6D (SRUKF) | 369.192 | 369.189 | 0.0008% |
+| Reentry 6D smoothed | 236.785 | 236.817 | 0.014% |
+
+The residual differences — 0.02% at worst — are float **reassociation**: a different
+summation order in the accelerated kernels, not a different answer. RMSE/NEES are
+therefore backend-independent and may be quoted without naming a host. Timings may
+not.
 
 ---
 
@@ -115,11 +221,20 @@ For Blackwell, configure with `-DCMAKE_CUDA_ARCHITECTURES=native -DOPTMATH_CUDA_
 (SM 120 is not in the default multi-arch list). On CUDA 12.x, `nvcc` rejects
 `compute_100`/`compute_120` with `Unsupported gpu architecture`.
 
-### Current Build Configuration
+### Build Configuration (CUDA hosts)
 
-CUDA auto-detected and enabled. Active acceleration: CUDA (cuBLAS GEMM, GPU
-particle filter) + Vulkan compute shaders + OpenMP. OptMathKernels cuSOLVER
-Cholesky is available as of upstream v0.5.10 (verified on CUDA 13).
+CUDA is **auto-detected**: present → enabled, absent → the build silently drops to
+the next tier (CMake logs `CUDA not found - GPU acceleration disabled`). There is
+nothing to configure either way.
+
+- **On a CUDA host** (e.g. the x86_64 + RTX 5070 Ti reference machine): CUDA
+  (cuBLAS GEMM, GPU particle filter) + Vulkan compute shaders + OpenMP.
+- **On a non-CUDA host** (e.g. the aarch64 Raspberry Pi 5): NEON + Vulkan/V3D +
+  OpenMP, or pure Eigen if the SIMD options are off.
+
+OptMathKernels cuSOLVER Cholesky is available as of upstream v0.5.10 (verified on
+CUDA 13) — but see the cuSOLVER follow-up under "Future Work": it is not yet wired
+into FilterMath's Cholesky dispatch.
 
 ### CUDA Code (commit 397b2d9, active)
 
@@ -131,6 +246,11 @@ Cholesky is available as of upstream v0.5.10 (verified on CUDA 13).
 
 ## Build Verification (July 8, 2026)
 
+> **Historical record — one host, one dependency version.** GPU test counts and all
+> timings below are specific to the x86_64 + RTX 5070 Ti reference machine and do
+> not reproduce elsewhere; the RMSE/NEES figures do. For the current numbers see
+> "Backend portability" above.
+
 ### Ubuntu 26.04 LTS (x86_64) — OptMathKernels v0.5.17
 
 **System Info**:
@@ -139,7 +259,9 @@ Cholesky is available as of upstream v0.5.10 (verified on CUDA 13).
 - CUDA: 13.1.115 (enabled, SM native / 120)
 - Vulkan: 1.4.341 (discrete GPU auto-selected — RTX 5070 Ti)
 - Eigen: 3.4.0
-- OptMathKernels: pinned **v0.5.17** via `OPTMATH_RELEASE_TAG`
+- OptMathKernels: **v0.5.17**, pinned via `OPTMATH_RELEASE_TAG` — *a FetchContent
+  option that no longer exists; the build now compiles the `OPTMATH_DIR` sibling
+  working tree. See the provisioning policy at the top of this file.*
 
 **Build Command**:
 ```bash
@@ -151,6 +273,12 @@ make -j$(nproc)
 incl. `test_cuda_kernels` on the Blackwell GPU and the 4 Vulkan suites selecting
 the discrete GPU). Total CTest time ≈ 5.9 s.
 
+> **Current counts (2026-07-14, aarch64 Raspberry Pi 5, OptMath v0.6.3, no CUDA):
+> 30/30** — 12 registered by this repo (`add_test` in `CMakeLists.txt`) + 18 from
+> the dependency. The repo grew from 9 to 12 tests with `SRUKF_AngularWrap` (v3.3.0)
+> and the three smoother regressions (v3.4.0). The Eigen-only build is 29/29
+> (`test_neon_fp16` is not registered without NEON).
+
 ---
 
 ## Before/After Validation Record (July 8, 2026)
@@ -159,7 +287,10 @@ Side-by-side validation of the v3.3.0 feature work (kernel bump + the three
 audit fixes + optimization #1). **Before** = commit `7609df4` (session start,
 OptMathKernels v0.5.15); **After** = commit `2c7dccf` (v0.5.17 + fixes + opt).
 The "before" tree was built from a detached `git worktree` at that commit so the
-two builds are truly independent. Same host as the Build Verification above.
+two builds are truly independent. Same host as the Build Verification above
+(x86_64 + RTX 5070 Ti) — the RMSE/NEES/divergence figures below are
+backend-independent and reproduce anywhere, but **the millisecond timings in
+"Optimization #1" are specific to that host and do not transfer.**
 
 ### Tests — unchanged pass
 
@@ -275,25 +406,100 @@ sudo apt install vulkan-tools libvulkan-dev  # Optional: Vulkan runtime
 
 ## Future Work
 
-### When CUDA 13+ Available
+### CUDA follow-ups
 
-1. Add SM 100 (Blackwell) back to architecture list in CMakeLists.txt
-2. Verify `-expt-relaxed-constexpr` flag compatibility
-3. Benchmark Blackwell vs Ampere/Ada Lovelace performance
-4. Benchmark CUDA vs Vulkan particle filter performance
+1. Verify `-expt-relaxed-constexpr` flag compatibility
+2. Benchmark Blackwell vs Ampere/Ada Lovelace performance
+3. Benchmark CUDA vs Vulkan particle filter performance
 
-### cuSOLVER Integration (OptimizedKernels)
+*(The former item "add SM 100 (Blackwell) back to the architecture list" is **done**:
+`CMakeLists.txt` appends SM 100/120 automatically when `nvcc` is CUDA ≥ 13.)*
 
-When OptimizedKernels adds cuSOLVER support:
+### cuSOLVER adoption
+
+Upstream cuSOLVER Cholesky / triangular solve has been available since
+OptMathKernels **v0.5.10**, but it is **not yet wired into FilterMath's Cholesky
+dispatch** — the gap is on our side, not upstream's. Wiring it up would add:
 - GPU Cholesky decomposition
 - GPU triangular solve
 - GPU matrix inverse
 
-This will enable full GPU acceleration for UKF/SRUKF sigma point operations.
+enabling full GPU acceleration for UKF/SRUKF sigma point operations on CUDA hosts.
 
 ---
 
 ## Changelog
+
+### v3.4.1 (July 2026) — build portability, honest metrics, test hardening
+
+**Build portability** (`c8d2905`). The build had no architecture detection at all:
+it force-set `ENABLE_NEON`/`ENABLE_SVE2` ON unconditionally — ARM-only instruction
+sets requested on every target including x86 — and hardcoded `-march=native`, which
+is an x86 spelling that aarch64 toolchains and Apple clang reject and MSVC has no
+equivalent for.
+
+- **Target-architecture detection** via `CMAKE_SYSTEM_PROCESSOR` (respects
+  cross-compilation, unlike probing the build host).
+- **New options**, so the user's choice is what propagates to the dependency:
+  `NLF_ENABLE_NEON`, `NLF_ENABLE_SVE2` (default ON **only on ARM targets**),
+  `NLF_ENABLE_VULKAN` (default ON; auto-skipped when no SDK is found),
+  `NLF_ENABLE_NATIVE_ARCH` (default ON; **auto-OFF when cross-compiling**, where
+  "native" would mean the build host and emit instructions the target cannot run —
+  also turn it OFF for redistributable binaries).
+- **`-march=native` removed.** The native-tuning flag is now *probed* with
+  `check_cxx_compiler_flag`: `-mcpu=native` on ARM, `-march=native` on x86, `/O2`
+  on MSVC, and portable codegen when none is accepted — an unknown toolchain
+  degrades instead of failing to configure.
+- **Release flags moved to `$<CONFIG:Release>` generator expressions.** The old
+  `if(CMAKE_BUILD_TYPE STREQUAL "Release")` form silently no-opped twice: on a
+  first configure from an empty cache, and under *every* multi-config generator
+  (Ninja Multi-Config, Visual Studio, Xcode), where `CMAKE_BUILD_TYPE` is empty by
+  design. Both produced binaries with no `-O3`/native-tuning/LTO while
+  `CMakeCache.txt` read `Release`. An explicit `-DCMAKE_BUILD_TYPE=Release` is
+  still good practice but is **no longer load-bearing** for the compile flags.
+  `enable_lto_if_supported()` had the same defect and is fixed the same way: it now
+  sets the per-config `INTERPROCEDURAL_OPTIMIZATION_RELEASE` property instead of
+  guarding the config-agnostic one behind `STREQUAL`. **Verified 2026-07-14** under
+  `-G "Ninja Multi-Config"`: every NLF target (`ekf_test`, `srukf_test`,
+  `run_benchmarks`, `rbpf_core`, …) now gets `-flto` in the Release config, and the
+  Debug config gets none — previously NLF's targets silently lost LTO under every
+  multi-config generator while the dependency's kept it. Single-config builds were
+  only passing before by accident, because the dependency's `add_subdirectory`
+  defaults `CMAKE_BUILD_TYPE=Release` into the cache before our call sites run.
+- **Verified:** Eigen-only, no-native-tuning build compiles and runs, 29/29 CTest
+  vs 30/30 with NEON, benchmark accuracy identical to ≤0.02%. See "Backend
+  portability" above.
+
+**Stopped publishing fabricated metrics** (`c8d2905`).
+
+- `RMSE_Position` / `RMSE_Velocity` (and their smoothed twins) **removed** from the
+  metrics struct and CSV. They were never assigned and were emitted as `0.0` for
+  every row of every problem — published as data. `compute_rmse_indices()` is
+  retained (uncalled, deliberately) as the real implementation should the columns
+  ever be wanted back.
+- `compute_convergence_time()` returned `times.back()` when the filter **never**
+  converged — a sentinel indistinguishable from "converged on the last step". 6 of
+  13 rows were publishing it as a measurement. It now returns NaN, prints
+  `did not converge`, and writes an empty CSV cell.
+
+**Smoother test hardening** (`d03511f`). The v3.4.0 smoother tests gated only on
+*relative* invariants (`smoothed < filtered`, `trace(P_s) <= trace(P_f)`), which
+pass whenever both estimates degrade together; `allFinite()` accepts a negative
+variance, and the one-sided trace check read a hugely negative trace as success.
+Demonstrated by scaling every `filtermath::gemm` result: `x1.05` (filtered RMSE
+1.354), `x1.20` (interior cov trace **−543.898** — non-PSD, impossible) and `x0.80`
+(filtered RMSE 22.314, 18x) **all passed**. All three tests now assert absolute
+RMSE ceilings on both estimates, a min eigenvalue ≥ −1e-4 on the smoothed
+covariance at every timestep, and a two-sided interior trace bound. All three
+injected defects now fail with exit=1. Note the **eigenvalue check is what catches
+`x1.05`** — an absolute RMSE ceiling alone does not, since `x1.05` moves filtered
+RMSE only to 1.354. Ceilings sit ~20% above the clean deterministic values
+(seed 12345): EKF 1.207/0.717, UKF and SRUKF 1.218/0.680; measured drift between
+`-O1` and `-O3 -march=native` is zero, so the headroom guards future toolchains
+rather than observed variance.
+
+**Dependency**: OptMathKernels sibling tree adopted at **v0.6.3** — audited, no
+numerical impact (see "Audit: v0.5.17 → v0.6.3").
 
 ### v3.4.0 (July 2026)
 
@@ -357,8 +563,9 @@ gate/covariance fix were done independently on both branches and reconciled to
 
 ### v3.2.1 (July 2026) — audit remediation
 
-Repository-wide audit (correctness, build/reproducibility, docs). Verified on the
-aarch64 Raspberry Pi host (CPU: NEON/SVE2/Eigen path; no CUDA) and on the x86_64 +
+Repository-wide audit (correctness, build/reproducibility, docs). Verified on two
+hosts — the aarch64 Raspberry Pi 5 (CPU: NEON → Eigen path; Cortex-A76 has no SVE2,
+so SVE2 sources are compiled out and never execute there; no CUDA) and the x86_64 +
 RTX 5070 Ti / CUDA 13.1 reference host (25/25 CTest) — all CTest cases pass before
 and after; benchmark RMSE/NEES numerically unchanged.
 
@@ -388,6 +595,9 @@ and after; benchmark RMSE/NEES numerically unchanged.
 **Build / reproducibility**
 - Dependency source is now the **public GitHub URL** by default (was a local
   `$HOME` path that broke clean clones), overridable via `-DOPTMATH_REPO`.
+  _(Superseded 2026-07-10: `OPTMATH_REPO` no longer exists. The clone URL is now
+  `-DOPTMATH_HTTPS_URL` — used only with `-DAUTO_CLONE_DEPS=ON` — and the source
+  path is `-DOPTMATH_DIR`.)_
 - Tests now use a `CHECK` macro (exits non-zero) instead of `assert()`, which was
   compiled out under `NDEBUG` — CTest was green regardless of correctness in
   Release. Added real numeric + fixed-lag-smoother assertions to the RBPF test.
@@ -414,17 +624,33 @@ v3.3.0 above.)_
 
 No CI is committed yet. A minimal GitHub Actions workflow would need to build
 CPU-only (`-DCMAKE_CUDA_COMPILER=""`), skip the venv (`-DNLF_BUILD_PYTHON_VENV=OFF`),
-and either provide a Vulkan loader / `glslang` on the runner or gate the
-dependency's Vulkan tests, because `ENABLE_VULKAN` is forced ON. Run
-`ctest -R "EKF_Test|UKF_Test|SRUKF_Test|PKF_Test|PKF_Example|RBPF_Basic|RBPF_CTRV|Benchmarks"`
-to enforce the eight project tests on every clean checkout.
+and either provide a Vulkan loader / `glslang` on the runner or set
+`-DNLF_ENABLE_VULKAN=OFF` (it defaults ON, though it auto-skips when no SDK is
+found). Run
+
+```
+ctest -R "EKF_Test|UKF_Test|SRUKF_Test|SRUKF_AngularWrap|SRUKF_Smoother|UKF_Smoother|EKF_Smoother|PKF_Test|PKF_Example|RBPF_Basic|RBPF_CTRV|Benchmarks"
+```
+
+to enforce the **twelve** project tests on every clean checkout.
+
+Now that the build is architecture-aware, the matrix worth running is a portability
+one, and it needs no GPU: an x86_64 runner (`NLF_ENABLE_NEON`/`SVE2` default OFF
+there) plus an Eigen-only job
+(`-DNLF_ENABLE_NEON=OFF -DNLF_ENABLE_SVE2=OFF -DNLF_ENABLE_NATIVE_ARCH=OFF`) would
+have caught the ARM-only-flags-on-every-target defect fixed in v3.4.1.
+`NLF_ENABLE_NATIVE_ARCH=OFF` is also the right setting for any redistributable
+artifact a runner produces.
 
 ### v3.2.0 (May 2026)
 - Audited OptMathKernels major updates v0.5.13 → v0.5.15 (see "Release Audit" above)
 - Adopted tag/release pinning: `OPTMATH_RELEASE_TAG` pins FetchContent to a
   release tag (now `v0.5.15`) instead of tracking `main`
+  _(Reverted 2026-07-10 — `OPTMATH_RELEASE_TAG` no longer exists. See
+  "Provisioning policy (current)": the build compiles the `OPTMATH_DIR` sibling
+  working tree.)_
 - Picked up upstream Vulkan discrete-GPU preference (RTX 5070 Ti now selected for
-  Vulkan compute on this dual-GPU host)
+  Vulkan compute on the dual-GPU x86_64 reference host)
 - Refreshed CUDA status to CUDA 13.x / Blackwell SM 120 (resolved former blocker)
 - Rebuilt, 24/24 CTest pass, benchmarks rerun (RMSE/NEES unchanged), plots regenerated
 
