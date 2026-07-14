@@ -147,9 +147,19 @@ else()
 endif()
 
 # Helper function to enable LTO on non-CUDA targets
+# Enable LTO on a target for the Release configuration only.
+#
+# Uses the per-config INTERPROCEDURAL_OPTIMIZATION_RELEASE property rather than a
+# `CMAKE_BUILD_TYPE STREQUAL "Release"` guard around the config-agnostic one. The
+# guard was dead under every multi-config generator (CMAKE_BUILD_TYPE is empty
+# there by design), so NLF's targets silently lost LTO while the dependency's kept
+# it; and single-config builds only passed the guard incidentally, because the
+# dependency's add_subdirectory defaults CMAKE_BUILD_TYPE into the cache before
+# these call sites are reached. The per-config property is evaluated at generate
+# time and is correct for both generator kinds, without pinning LTO onto Debug.
 function(enable_lto_if_supported target)
-    if(NLF_LTO_SUPPORTED AND CMAKE_BUILD_TYPE STREQUAL "Release")
-        set_target_properties(${target} PROPERTIES INTERPROCEDURAL_OPTIMIZATION TRUE)
+    if(NLF_LTO_SUPPORTED)
+        set_target_properties(${target} PROPERTIES INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
     endif()
 endfunction()
 

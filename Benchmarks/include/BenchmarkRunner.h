@@ -309,10 +309,15 @@ void compute_nees(const std::vector<State>& true_states,
  * Detect convergence time - when error falls below threshold and stays there.
  *
  * Returns NaN if the filter never converges, so a non-convergence cannot be
- * mistaken for a measurement. Note the threshold is an ABSOLUTE error norm and
- * defaults to 0.5: problems whose error scale exceeds it (e.g. BearingOnly ~64,
- * ReentryVehicle ~369) can never converge by this definition and will always
- * report NaN unless the caller passes a threshold appropriate to the problem.
+ * mistaken for a measurement.
+ *
+ * `threshold` is an ABSOLUTE error norm, not a relative one, so it only means
+ * anything against a problem whose error scale is comparable to it. Every call
+ * site in run_benchmarks.cpp passes 1.0; the 0.5 default is not used. Problems
+ * whose error scale far exceeds the threshold (BearingOnly ~64, ReentryVehicle
+ * ~369) therefore never converge by this definition and always report NaN --
+ * that is a real property of the metric, not a filter failure. Reporting it
+ * usefully for those problems needs a per-problem or relative threshold.
  */
 template<typename State>
 float compute_convergence_time(const std::vector<float>& times,
