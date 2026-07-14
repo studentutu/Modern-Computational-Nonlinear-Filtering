@@ -11,9 +11,13 @@ add_library(PKF_Lib INTERFACE)
 # on the include path; PKF did not, which is why particle_filter_gpu.hpp reaches for
 # it as "../../Common/include/FilterMath.h" -- a relative escape that breaks once
 # install(DIRECTORY) flattens every -I root into a single include/nlf.
+# $<BUILD_INTERFACE>/$<INSTALL_INTERFACE>: PKF_Lib is part of the exported nlf
+# package, and install(EXPORT) rejects bare source-tree paths on an exported
+# target. The install root is the flat <prefix>/include/nlf.
 target_include_directories(PKF_Lib INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/Common/include)
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Common/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/nlf>)
 target_link_libraries(PKF_Lib INTERFACE Eigen3::Eigen)
 
 # Link OpenMP if available

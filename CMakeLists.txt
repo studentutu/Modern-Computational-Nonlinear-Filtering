@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(NonlinearFiltering LANGUAGES CXX)
+project(NonlinearFiltering VERSION 3.4.0 LANGUAGES CXX)
 
 # Set C++ Standard
 set(CMAKE_CXX_STANDARD 20)
@@ -295,6 +295,12 @@ else()
     set(ENABLE_CUDA OFF CACHE BOOL "Enable NVIDIA CUDA support" FORCE)
 endif()
 
+# The dependency's test suite FetchContent's GoogleTest, which installs itself by
+# default -- dumping gtest/gmock headers, libs and CMake config into our install
+# prefix. We are not redistributing GoogleTest; it is a test-only dependency of a
+# dependency.
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+
 # Require the OptMath sibling directory; optionally clone it over HTTPS.
 if(NOT EXISTS "${OPTMATH_DIR}/CMakeLists.txt")
     if(AUTO_CLONE_DEPS)
@@ -335,20 +341,107 @@ add_subdirectory(PKF)
 add_subdirectory(RBPKF)
 add_subdirectory(Benchmarks)
 
-# --- Install rules ---
-# This project is primarily a header library (the filters are header-only
-# templates); the reusable artifact is the set of public headers. Install them
-# into a single include/ root, mirroring the multiple -I roots used at build
-# time, so `#include "UKF.h"`, `#include "rbpf/rbpf_core.hpp"`, etc. resolve for
-# downstream consumers. (`run_benchmarks` also installs to bin via Benchmarks/.)
+# ============================================================================
+#  Install / export
+# ============================================================================
+#
+# The consumer contract is a CMake package:
+#
+#     find_package(nlf REQUIRED)
+#     target_link_libraries(my_app PRIVATE nlf::nlf)
+#     #include "UKF.h"        // or <nlf/UKF.h> -- both work, see below
+#
+# Previously the install was a bare install(DIRECTORY) that flattened five -I
+# roots into include/nlf and declared nothing else. That could not work, for two
+# reasons that a config file alone would not have fixed:
+#
+#  1. The include root was ambiguous. Headers use quoted includes ("FilterMath.h")
+#     which resolve against a FLAT root, but the nlf/ prefix invited
+#     <nlf/rbpf/rbpf_core.hpp>, under which those quoted includes do not resolve.
+#     Consumers had to guess, and half the headers failed either way.
+#  2. FilterMath.h is a PUBLIC header that does `#include <optmath/neon_kernels.hpp>`
+#     and calls optmath::. OptMathKernels ships no install() or export rules at
+#     all, so nothing put its headers or its library in the install tree: the
+#     installed headers could not compile, and would not have linked if they had.
+#
+# Both are fixed by exporting a real target that carries BOTH include roots:
+# <prefix>/include (so <nlf/UKF.h> and <optmath/...> resolve) and
+# <prefix>/include/nlf (so the headers' own quoted includes resolve). Consumers
+# inherit them from nlf::nlf and never guess.
+#
+# OptMathKernels is installed and exported as part of this package. We do not own
+# it, but our public ABI hard-depends on it and it provides no install rules of
+# its own, so shipping our build of it is what makes the install usable at all.
+# It was already export-ready ($<BUILD_INTERFACE>/$<INSTALL_INTERFACE> on its
+# include dirs); only the install() rules were missing.
+
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+# Umbrella target for the header-only filters (EKF/UKF/SRUKF/PKF live in headers;
+# EKF/ and UKF/ have no library target of their own, only directory-scope includes).
+add_library(nlf INTERFACE)
+add_library(nlf::nlf ALIAS nlf)
+
+target_include_directories(nlf INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Common/include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/EKF/include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/UKF/include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/PKF/include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/RBPKF/include>
+    # Flat root: the headers' own quoted includes resolve against this.
+    # <prefix>/include comes along via OptMathKernels' INSTALL_INTERFACE, which is
+    # what makes <nlf/UKF.h> work too.
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/nlf>)
+
+target_compile_features(nlf INTERFACE cxx_std_20)
+target_link_libraries(nlf INTERFACE Eigen3::Eigen OptMathKernels rbpf_core)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(nlf INTERFACE OpenMP::OpenMP_CXX)
+endif()
+
+install(TARGETS nlf rbpf_core PKF_Lib OptMathKernels
+        EXPORT nlfTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# This project's headers -> <prefix>/include/nlf (flattened; the headers are
+# written for a flat root and include each other unqualified).
 install(DIRECTORY
         Common/include/
         EKF/include/
         UKF/include/
         PKF/include/
         RBPKF/include/
-        DESTINATION include/nlf
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/nlf
         FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+
+# OptMathKernels' headers -> <prefix>/include/optmath/, preserving the directory
+# name, because our public FilterMath.h includes them as <optmath/...>.
+install(DIRECTORY "${OPTMATH_SOURCE_DIR}/include/optmath"
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+
+install(EXPORT nlfTargets
+        FILE nlfTargets.cmake
+        NAMESPACE nlf::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nlf)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/nlfConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/nlfConfig.cmake"
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nlf)
+
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/nlfConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMinorVersion)
+
+install(FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/nlfConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/nlfConfigVersion.cmake"
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/nlf)
 
 # --- CTest Integration ---
 enable_testing()
