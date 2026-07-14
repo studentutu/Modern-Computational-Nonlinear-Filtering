@@ -7,7 +7,13 @@ endif()
 
 # Header-only library for PKF core
 add_library(PKF_Lib INTERFACE)
-target_include_directories(PKF_Lib INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# Common/include carries FilterMath.h and TestCheck.h. EKF/ and UKF/ already put it
+# on the include path; PKF did not, which is why particle_filter_gpu.hpp reaches for
+# it as "../../Common/include/FilterMath.h" -- a relative escape that breaks once
+# install(DIRECTORY) flattens every -I root into a single include/nlf.
+target_include_directories(PKF_Lib INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/Common/include)
 target_link_libraries(PKF_Lib INTERFACE Eigen3::Eigen)
 
 # Link OpenMP if available

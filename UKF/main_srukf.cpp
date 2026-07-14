@@ -7,6 +7,7 @@
 #include "SRUKF.h"
 #include "SRUKFFixedLagSmoother.h"
 #include "DragBallModel.h"
+#include "TestCheck.h"
 
 using namespace UKFCore;
 
@@ -181,6 +182,21 @@ int main() {
     }
     file_smooth.close();
     std::cout << "Saved results to srukf_smoother_results.csv" << std::endl;
+
+    // Registered as the SRUKF_Test CTest case, so these must gate the exit code;
+    // this program previously had no non-zero exit path.
+    //
+    // These are also the only automated assertions covering SRUKFFixedLagSmoother
+    // (the full-interval SRUKFSmoother is covered by tests/test_srukf_smoother.cpp,
+    // which is a separate implementation).
+    //
+    // Deterministic run (std::mt19937 gen(42), line 44), bit-reproducible across
+    // runs: filtered 0.354521, smoothed 0.165446. Ceilings ~25% above.
+    NLF_CHECK(smooth_count > 0, "fixed-lag smoother produced estimates");
+    NLF_CHECK(std::isfinite(rmse_filt) && std::isfinite(rmse_smooth), "RMSE is finite");
+    NLF_CHECK(rmse_smooth < rmse_filt, "fixed-lag smoothing reduces RMSE");
+    NLF_CHECK(rmse_filt < 0.45, "filtered RMSE within absolute bound");
+    NLF_CHECK(rmse_smooth < 0.21, "smoothed RMSE within absolute bound");
 
     std::cout << "\n=== SRUKF Test Complete ===" << std::endl;
 

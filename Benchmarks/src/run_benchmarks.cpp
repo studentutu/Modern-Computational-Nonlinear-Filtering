@@ -4,7 +4,10 @@
 #include <random>
 #include <chrono>
 #include <Eigen/Dense>
+#include <string>
+#include <cmath>
 #include "FilterMath.h"
+#include "TestCheck.h"
 
 #include "BenchmarkProblems.h"
 #include "BenchmarkRunner.h"
@@ -620,6 +623,63 @@ int main() {
     std::cout << "\n\n========== Benchmark Complete ==========" << std::endl;
     std::cout << "Results saved to benchmark_results.csv" << std::endl;
     std::cout << "Trajectory files saved with prefix: coupled_osc_, vanderpol_, bearing_, reentry_" << std::endl;
+
+    // ------------------------------------------------------------------
+    //  Regression gate (this binary is registered as the Benchmarks CTest case)
+    // ------------------------------------------------------------------
+    // Gates on ACCURACY and CONSISTENCY only, never on step time. RMSE/NEES are
+    // backend- and host-independent, so they mean the same thing on every machine;
+    // wall-clock does not, and this suite has no warmup or repetitions, so a timing
+    // gate would just flake on any loaded or slower box.
+    //
+    // Ceilings are ~25% above the values measured on this problem set and are here
+    // to catch a filter that has broken or diverged, not numerical drift.
+    struct RmseCeiling { const char* problem; float ceiling; };
+    const RmseCeiling ceilings[] = {
+        {"CoupledOscillators10D",   1.85f},   // measured 1.45666
+        {"VanDerPol2D",             0.60f},   // measured 0.46626 - 0.468053
+        {"BearingOnly4D",          80.0f},    // measured 63.81 - 64.17
+        {"ReentryVehicle6D",      460.0f},    // measured 369.04 - 369.19
+    };
+
+    std::cout << "\n--- Regression gate ---" << std::endl;
+    NLF_CHECK(all_metrics.size() == 13,
+              "benchmark suite produced all 13 filter/problem rows");
+
+    for (const auto& m : all_metrics) {
+        const std::string tag = m.filter_name + " on " + m.problem_name;
+
+        NLF_CHECK(std::isfinite(m.rmse_overall) && m.rmse_overall > 0.0f,
+                  ("filtered RMSE is finite and positive: " + tag).c_str());
+        NLF_CHECK(m.num_divergences == 0,
+                  ("filter did not diverge: " + tag).c_str());
+
+        // A smoother that does not improve on the filter it smooths is broken.
+        if (m.rmse_smoothed_overall > 0.0f) {
+            NLF_CHECK(std::isfinite(m.rmse_smoothed_overall),
+                      ("smoothed RMSE is finite: " + tag).c_str());
+            NLF_CHECK(m.rmse_smoothed_overall < m.rmse_overall,
+                      ("smoothing reduces RMSE: " + tag).c_str());
+        }
+
+        // NEES consistency: a filter whose covariance no longer describes its own
+        // error lands far outside the 95% band. The floor is deliberately slack
+        // (measured 94.5-99.6%) so only a gross inconsistency trips it.
+        NLF_CHECK(std::isfinite(m.median_nees) && m.median_nees > 0.0f,
+                  ("median NEES is finite and positive: " + tag).c_str());
+        NLF_CHECK(m.nees_valid > 0, ("NEES had well-conditioned samples: " + tag).c_str());
+        NLF_CHECK(m.pct_in_bounds >= 80.0f,
+                  ("NEES stays inside the 95% chi-square band: " + tag).c_str());
+
+        for (const auto& c : ceilings) {
+            if (m.problem_name == c.problem) {
+                NLF_CHECK(m.rmse_overall < c.ceiling,
+                          ("filtered RMSE within absolute bound: " + tag).c_str());
+            }
+        }
+    }
+    std::cout << "PASS: " << all_metrics.size()
+              << " rows within RMSE bounds, NEES-consistent, no divergences" << std::endl;
 
     return 0;
 }
