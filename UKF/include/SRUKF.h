@@ -5,6 +5,8 @@
 #include <Eigen/QR>
 #include <Eigen/Cholesky>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 #include "StateSpaceModel.h"
 #include "SigmaPoints.h"
 #include "FilterMath.h"
@@ -37,6 +39,16 @@ public:
     float beta = 2.0f;     // Optimal for Gaussian
     float kappa = -1.0f;   // Will be set in initialize()
 
+    /**
+     * Set the chi-squared innovation-gate threshold. The default of 25.0 is
+     * roughly the 3-sigma value for NY = 3; callers with different observation
+     * dimensions or tighter tail-cutoff requirements can override it.
+     */
+    void setInnovationGateChi2(float threshold) { innovation_gate_chi2_ = threshold; }
+
+    /** Query the current chi-squared innovation-gate threshold. */
+    float getInnovationGateChi2() const { return innovation_gate_chi2_; }
+
     /** Construct SRUKF with a reference to the nonlinear state-space model. */
     SRUKF(Model& model) : model_(model) {
         x_.setZero();
@@ -63,26 +75,64 @@ public:
             }
         }
 
-        // Compute Cholesky factor of P0 using accelerated Cholesky with fallback
+        // Validate P0 up-front. A caller passing NaN/Inf/asymmetric/non-PSD P0 will
+        // otherwise silently degrade into an identity square-root and produce garbage
+        // eight steps later. Fail fast at initialize().
+        if (!P0.allFinite()) {
+            throw std::runtime_error(
+                "SRUKF::initialize: P0 contains NaN or Inf entries");
+        }
+        // Symmetry check (P0 must be symmetric within a small relative tolerance).
+        {
+            StateMat asym = P0 - P0.transpose();
+            float asym_norm = asym.norm();
+            float p_norm = std::max(P0.norm(), 1e-30f);
+            if (asym_norm > 1e-4f * p_norm) {
+                throw std::runtime_error(
+                    "SRUKF::initialize: P0 is not symmetric within relative tolerance 1e-4");
+            }
+        }
+
+        // Compute Cholesky factor of P0 using accelerated Cholesky with fallback.
+        // The ladder is: accelerated Cholesky -> Cholesky with relative jitter -> LDLT.
+        // If all three fail, throw with the P0 condition number in the message so the
+        // caller learns immediately that P0 is not PSD.
         Eigen::MatrixXf L0_dyn = filtermath::cholesky(P0);
         StateMat L0;
+        bool have_factor = false;
         if (L0_dyn.size() > 0) {
             L0 = L0_dyn;
+            have_factor = true;
         } else {
-            StateMat P_jitter = P0 + 1e-6f * StateMat::Identity();
+            float trace_over_n = std::max(P0.trace() / static_cast<float>(NX), 0.0f);
+            float jitter = std::max(1e-6f, 1e-8f * trace_over_n);
+            StateMat P_jitter = P0 + jitter * StateMat::Identity();
             L0_dyn = filtermath::cholesky(P_jitter);
             if (L0_dyn.size() > 0) {
                 L0 = L0_dyn;
+                have_factor = true;
             } else {
                 Eigen::LDLT<StateMat> ldlt(P_jitter);
-                if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) {
-                    L0 = StateMat::Identity();
-                } else {
+                if (ldlt.info() == Eigen::Success && ldlt.isPositive()) {
                     StateMat P_ldlt = ldlt.matrixL();
                     Eigen::VectorXf D_sqrt = ldlt.vectorD().cwiseSqrt();
                     L0 = P_ldlt * D_sqrt.asDiagonal();
+                    have_factor = true;
                 }
             }
+        }
+        if (!have_factor) {
+            // Report condition number to diagnose caller's bad P0.
+            Eigen::MatrixXf P0_dyn = P0;
+            Eigen::JacobiSVD<Eigen::MatrixXf> svd(P0_dyn);
+            const auto& sv = svd.singularValues();
+            float smax = sv.size() > 0 ? sv(0) : 0.0f;
+            float smin = sv.size() > 0 ? sv(sv.size() - 1) : 0.0f;
+            float cond = (smin > 0.0f) ? (smax / smin)
+                                       : std::numeric_limits<float>::infinity();
+            throw std::runtime_error(
+                std::string("SRUKF::initialize: P0 is not positive definite; ") +
+                "condition number = " + std::to_string(cond));
         }
         S_ = L0;
     }
@@ -358,12 +408,20 @@ public:
         // Gate the innovation to prevent catastrophic updates from outliers
         Eigen::Matrix<float, NY, 1> temp_innov = S_yy.template triangularView<Eigen::Lower>().solve(innovation);
         float mahal_dist_sq = temp_innov.squaredNorm();
-        float gate_threshold = 25.0f;  // Chi-squared threshold (larger to allow GPS)
+        const float gate_threshold = innovation_gate_chi2_;
 
         float scale = 1.0f;
         if (mahal_dist_sq > gate_threshold) {
             // Scale down large corrections
             scale = std::sqrt(gate_threshold / mahal_dist_sq);
+            if (!warned_gate_) {
+                std::clog << "[SRUKF] innovation gate active (chi2="
+                          << mahal_dist_sq << " > threshold="
+                          << gate_threshold << "); scaling correction by "
+                          << scale << ". Further gate events will be silent."
+                          << std::endl;
+                warned_gate_ = true;
+            }
         }
 
         State correction = scale * (K * innovation);
@@ -439,6 +497,10 @@ private:
     Model& model_;
     State x_;
     StateMat S_;  // Square root of covariance (Cholesky factor)
+
+    // Innovation-gate configuration.
+    float innovation_gate_chi2_ = 25.0f;
+    bool  warned_gate_ = false;
 
     /**
      * Rank-1 Cholesky update: S_new such that

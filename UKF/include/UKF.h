@@ -129,17 +129,46 @@ public:
         // State update
         x_ = x_ + K * y_diff;
 
-        // Covariance update: P = P - K*S*K^T
+        // Covariance update — Joseph-consistent path with LLT/LDLT recovery ladder.
+        //
+        // The sigma-point UKF does not carry an explicit measurement Jacobian H, so the
+        // canonical Joseph form (I - K H) P (I - K H)^T + K R K^T cannot be assembled
+        // directly. Instead we use the equivalent P = P - K S K^T (symmetrized) and defend
+        // it with a relative-jitter recovery ladder that mirrors SRUKF.h:66-88.
         Eigen::MatrixXf KS = filtermath::gemm(K, S);
-        P_ = P_ - filtermath::gemm(KS, K.transpose());
+        StateMat P_new = P_ - filtermath::gemm(KS, K.transpose());
+        P_new = 0.5f * (P_new + P_new.transpose());
 
-        // Symmetrize and ensure positive definiteness
-        P_ = 0.5f * (P_ + P_.transpose());
-
-        // Check for positive definiteness and regularize if needed
-        Eigen::LLT<StateMat> llt_check(P_);
-        if (llt_check.info() != Eigen::Success) {
-            P_ += 1e-6f * StateMat::Identity();
+        // First LLT check
+        Eigen::LLT<StateMat> llt_check(P_new);
+        if (llt_check.info() == Eigen::Success) {
+            P_ = P_new;
+        } else {
+            // Relative jitter: 1e-6 floor with 1e-8 * trace(P)/NX scaling so that
+            // well-conditioned but numerically-fuzzed matrices are recovered without
+            // artificially inflating small-covariance states.
+            float trace_over_n = std::max(P_new.trace() / static_cast<float>(NX), 0.0f);
+            float jitter = std::max(1e-6f, 1e-8f * trace_over_n);
+            StateMat P_jitter = P_new + jitter * StateMat::Identity();
+            Eigen::LLT<StateMat> llt_retry(P_jitter);
+            if (llt_retry.info() == Eigen::Success) {
+                P_ = P_jitter;
+            } else {
+                // LDLT reconstruction (rebuild PSD approximant from spectrum).
+                Eigen::LDLT<StateMat> ldlt(P_jitter);
+                if (ldlt.info() == Eigen::Success && ldlt.isPositive()) {
+                    StateMat L = ldlt.matrixL();
+                    Eigen::VectorXf D = ldlt.vectorD();
+                    for (int i = 0; i < NX; ++i) {
+                        D(i) = std::sqrt(std::max(D(i), 1e-10f));
+                    }
+                    StateMat sqrtP = L * D.asDiagonal();
+                    P_ = sqrtP * sqrtP.transpose();
+                } else {
+                    // Last-resort clamp: preserve diagonal, discard off-diagonals.
+                    P_ = P_.diagonal().cwiseMax(1e-10f).asDiagonal();
+                }
+            }
         }
     }
 

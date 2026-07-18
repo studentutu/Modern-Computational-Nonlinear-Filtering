@@ -139,10 +139,12 @@ public:
             ObsCov S = filtermath::gemm(HP, H.transpose());
             S += R;
 
-            // Compute log determinant with singularity protection
-            float det = S.determinant();
+            // Compute log determinant via LDLT diagonal-product only.
+            // Direct det(S) overflows / underflows silently for ill-conditioned S; even
+            // when it does not, LDLT is roughly as cheap for the small ObsCov dimensions
+            // used here. Keep one code path so numerical behaviour is uniform.
             float log_det;
-            if (!std::isfinite(det) || det <= 1e-30f) {
+            {
                 Eigen::LDLT<ObsCov> ldlt(S);
                 if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) {
                     log_det = -1e10f;
@@ -152,8 +154,6 @@ public:
                     for (int k = 0; k < D.size(); ++k)
                         log_det += std::log(std::max(D(k), 1e-30f));
                 }
-            } else {
-                log_det = std::log(det);
             }
 
             // Mahalanobis distance via SPD solve

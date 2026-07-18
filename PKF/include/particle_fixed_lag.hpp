@@ -89,16 +89,21 @@ public:
     }
 
     /**
-     * @brief Get Filtered Mean (current time k)
+     * @brief Get Filtered Mean (current time k).
+     *
+     * NOTE: no longer const. The underlying ParticleFilter::get_mean() may
+     * mutate GPU state or demote the filter to CPU on GPU failure.
      */
-    State get_filtered_mean() const {
+    State get_filtered_mean() {
         return filter_.get_mean();
     }
 
     /**
-     * @brief Get Filtered Covariance (current time k)
+     * @brief Get Filtered Covariance (current time k).
+     *
+     * NOTE: no longer const; see get_filtered_mean() note.
      */
-    StateMat get_filtered_covariance() const {
+    StateMat get_filtered_covariance() {
         return filter_.get_covariance();
     }
 

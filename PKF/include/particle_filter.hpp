@@ -234,17 +234,58 @@ public:
     }
 
     /**
-     * @brief Get filtered mean estimate
+     * @brief Get filtered mean estimate.
+     *
+     * NOTE: no longer const. GPU-active filters mutate GPU-side state to compute
+     * this (upload particles and log-weights, run the reduction), and any GPU
+     * failure demotes the filter to CPU-only. Callers that need a read-only
+     * accessor should use compute_mean_cpu().
      */
-    State get_mean() const {
-        // GPU path
+    State get_mean() {
+        // GPU path — wrap in try/catch so any GPU failure demotes to CPU-only.
         if (use_gpu_ && gpu_ctx_ && gpu_ctx_->is_active()) {
-            // Const cast needed for GPU upload (doesn't modify)
-            const_cast<ParticleFilter*>(this)->sync_to_gpu();
-            return const_cast<gpu::GPUParticleContext<NX>*>(gpu_ctx_.get())->compute_mean_gpu();
+            try {
+                sync_to_gpu();
+                return gpu_ctx_->compute_mean_gpu();
+            } catch (const std::exception& ex) {
+                std::clog << "[PKF] GPU get_mean failed (" << ex.what()
+                          << "); demoting to CPU for the rest of this filter's life."
+                          << std::endl;
+                use_gpu_ = false;
+                gpu_ctx_.reset();
+            }
         }
 
-        // CPU path
+        return compute_mean_cpu();
+    }
+
+    /**
+     * @brief Get filtered covariance estimate.
+     *
+     * See note on get_mean() — this is also non-const because it may mutate GPU
+     * state and may demote to CPU-only on GPU failure.
+     */
+    StateMat get_covariance() {
+        State mean = get_mean();
+
+        // GPU path — same try/catch demotion pattern as get_mean.
+        if (use_gpu_ && gpu_ctx_ && gpu_ctx_->is_active()) {
+            try {
+                return gpu_ctx_->compute_covariance_gpu(mean);
+            } catch (const std::exception& ex) {
+                std::clog << "[PKF] GPU get_covariance failed (" << ex.what()
+                          << "); demoting to CPU for the rest of this filter's life."
+                          << std::endl;
+                use_gpu_ = false;
+                gpu_ctx_.reset();
+            }
+        }
+
+        return compute_covariance_cpu(mean);
+    }
+
+    /** CPU-only mean accessor; safe to call from a const context via wrapper. */
+    State compute_mean_cpu() const {
         State mean = State::Zero();
         for (size_t i = 0; i < N_; ++i) {
             mean += std::exp(log_weights_[i]) * particles_[i];
@@ -252,18 +293,8 @@ public:
         return mean;
     }
 
-    /**
-     * @brief Get filtered covariance estimate
-     */
-    StateMat get_covariance() const {
-        State mean = get_mean();
-
-        // GPU path
-        if (use_gpu_ && gpu_ctx_ && gpu_ctx_->is_active()) {
-            return const_cast<gpu::GPUParticleContext<NX>*>(gpu_ctx_.get())->compute_covariance_gpu(mean);
-        }
-
-        // CPU path
+    /** CPU-only covariance accessor; requires the pre-computed mean. */
+    StateMat compute_covariance_cpu(const State& mean) const {
         StateMat cov = StateMat::Zero();
         for (size_t i = 0; i < N_; ++i) {
             State diff = particles_[i] - mean;
