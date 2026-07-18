@@ -75,6 +75,67 @@ function(enable_lto_if_supported target)
     endif()
 endfunction()
 
+# --- Uniform warning flags -----------------------------------------------------
+#
+# nlf_add_warning_flags(<target>) attaches the project's standard warning set to
+# a target (executables and libraries alike). Called from every subdirectory so
+# that host C++ TUs across EKF/UKF/PKF/RBPKF/Benchmarks get identical
+# diagnostics — pre-audit, only PKF and Benchmarks enforced warnings, leaving
+# the other filter directories with a much weaker signal.
+#
+# GCC's -Wstringop-overread is disabled at both compile and link because Eigen's
+# AVX-512 code paths trigger a well-known false positive under LTO. Clang does
+# not know this flag; we gate it on GCC.
+#
+# CUDA compilation is skipped: nvcc does not consistently forward -W* flags to
+# the host compiler, and warnings from the OptimizedKernels CUDA TUs are the
+# upstream project's responsibility, not ours.
+function(nlf_add_warning_flags target)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target} PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+            $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+            $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
+            $<$<COMPILE_LANGUAGE:CXX>:-Wshadow>
+            $<$<COMPILE_LANGUAGE:CXX>:-Wno-unused-parameter>
+        )
+    endif()
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${target} PRIVATE
+            $<$<COMPILE_LANGUAGE:CXX>:-Wno-stringop-overread>
+        )
+        target_link_options(${target} PRIVATE -Wno-stringop-overread)
+    endif()
+endfunction()
+
+# --- Sanitizers (opt-in) -------------------------------------------------------
+#
+# NLF_ENABLE_SANITIZERS attaches AddressSanitizer + UndefinedBehaviorSanitizer to
+# C++ TUs when the build type is Debug or RelWithDebInfo. Only C++ TUs are
+# instrumented — CUDA TUs compiled by nvcc are excluded because nvcc does not
+# reliably pass -fsanitize=... through to the host compiler and the ABI cost
+# breaks device-side linking. The generator expression handles the language
+# gating.
+option(NLF_ENABLE_SANITIZERS "Enable ASan+UBSan on C++ TUs (Debug/RelWithDebInfo)" OFF)
+
+if(NLF_ENABLE_SANITIZERS AND (CMAKE_BUILD_TYPE STREQUAL "Debug"
+                              OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo"))
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(STATUS "NLF_ENABLE_SANITIZERS=ON: attaching ASan+UBSan to C++ TUs")
+        add_compile_options(
+            $<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address>
+            $<$<COMPILE_LANGUAGE:CXX>:-fsanitize=undefined>
+            $<$<COMPILE_LANGUAGE:CXX>:-fno-sanitize-recover=undefined>
+            $<$<COMPILE_LANGUAGE:CXX>:-fno-omit-frame-pointer>
+        )
+        # Sanitizer runtimes must also be linked. -fsanitize=... on the link
+        # step drags in libasan / libubsan.
+        add_link_options(-fsanitize=address -fsanitize=undefined)
+    else()
+        message(WARNING "NLF_ENABLE_SANITIZERS=ON but compiler is not GCC/Clang; ignoring")
+    endif()
+endif()
+
 # --- OpenMP Support ---
 find_package(OpenMP)
 if(OpenMP_CXX_FOUND)
@@ -208,3 +269,9 @@ add_test(NAME PKF_Example COMMAND pkf_example)
 add_test(NAME RBPF_Basic COMMAND test_rbpf_basic)
 add_test(NAME RBPF_CTRV COMMAND example_rbpf_ctrv)
 add_test(NAME Benchmarks COMMAND run_benchmarks)
+
+# Audit-remediation regression tests
+add_test(NAME UKF_Numerical      COMMAND test_ukf_numerical)
+add_test(NAME SRUKF_Initialize   COMMAND test_srukf_initialize)
+add_test(NAME PKF_ParticleConst  COMMAND test_particle_const)
+add_test(NAME RBPF_LogDet        COMMAND test_rbpf_logdet)

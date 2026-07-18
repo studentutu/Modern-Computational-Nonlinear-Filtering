@@ -30,8 +30,16 @@ enable_lto_if_supported(rbpf_core)
 add_executable(example_rbpf_ctrv examples/example_rbpf_ctrv.cpp)
 target_link_libraries(example_rbpf_ctrv PRIVATE rbpf_core OptMathKernels)
 enable_lto_if_supported(example_rbpf_ctrv)
+nlf_add_warning_flags(example_rbpf_ctrv)
 
 # Tests
 add_executable(test_rbpf_basic tests/test_rbpf_basic.cpp)
 target_link_libraries(test_rbpf_basic PRIVATE rbpf_core OptMathKernels)
 enable_lto_if_supported(test_rbpf_basic)
+nlf_add_warning_flags(test_rbpf_basic)
+
+# Log-det regression test introduced by the audit-remediation pass.
+add_executable(test_rbpf_logdet tests/test_rbpf_logdet.cpp)
+target_link_libraries(test_rbpf_logdet PRIVATE rbpf_core OptMathKernels)
+enable_lto_if_supported(test_rbpf_logdet)
+nlf_add_warning_flags(test_rbpf_logdet)

@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Release build + ctest. No CUDA — the codebase routes through FilterMath.h's
+  # CPU/NEON/SVE2 fallbacks when CUDA is absent. This is the sustaining lane
+  # that a normal contributor's PR is expected to pass.
+  # ---------------------------------------------------------------------------
+  build-and-test:
+    name: Release build + ctest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            libeigen3-dev \
+            libomp-dev \
+            git \
+            python3 \
+            python3-venv \
+            python3-pip
+
+      # OptMathKernels v0.5.15 must live at $HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA
+      # so the FetchContent GIT_REPOSITORY line in the root CMakeLists.txt resolves.
+      # Pinning the tag here keeps CI reproducible even if upstream moves.
+      - name: Pre-clone OptMathKernels v0.5.15 to $HOME
+        run: |
+          git clone --depth 1 --branch v0.5.15 \
+            https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA \
+            "$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA"
+
+      - name: Configure (Release)
+        run: |
+          cmake -S . -B build \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # RelWithDebInfo + ASan+UBSan. This is the sustaining net that catches
+  # regressions of the numerical / lifetime bugs closed by this remediation
+  # pass. Same host set as the release lane, but with sanitizers on.
+  # ---------------------------------------------------------------------------
+  sanitizers:
+    name: RelWithDebInfo + ASan+UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            libeigen3-dev \
+            libomp-dev \
+            git \
+            python3 \
+            python3-venv \
+            python3-pip
+
+      - name: Pre-clone OptMathKernels v0.5.15 to $HOME
+        run: |
+          git clone --depth 1 --branch v0.5.15 \
+            https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA \
+            "$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA"
+
+      - name: Configure (RelWithDebInfo + sanitizers)
+        run: |
+          cmake -S . -B build-asan \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DNLF_ENABLE_SANITIZERS=ON
+
+      - name: Build
+        run: cmake --build build-asan -j
+
+      # ASAN_OPTIONS and UBSAN_OPTIONS make sanitizer failures loud and force
+      # ctest to exit non-zero when anything is detected. detect_leaks=0 keeps
+      # third-party leaks (Eigen static init) from masking real hits.
+      - name: Test
+        env:
+          ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1:halt_on_error=1"
+          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
+        run: ctest --test-dir build-asan --output-on-failure

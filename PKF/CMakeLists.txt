@@ -19,22 +19,28 @@ endif()
 add_executable(pkf_example src/example_main.cpp)
 target_link_libraries(pkf_example PRIVATE PKF_Lib OptMathKernels)
 enable_lto_if_supported(pkf_example)
+nlf_add_warning_flags(pkf_example)
 
 # Test Executable
 add_executable(pkf_test tests/test_particle.cpp)
 target_link_libraries(pkf_test PRIVATE PKF_Lib OptMathKernels)
 enable_lto_if_supported(pkf_test)
+nlf_add_warning_flags(pkf_test)
 
-# Enable warnings
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(pkf_example PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
-    target_compile_options(pkf_test PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
-endif()
+# Const-correctness regression test introduced by the audit-remediation pass.
+add_executable(test_particle_const tests/test_particle_const.cpp)
+target_link_libraries(test_particle_const PRIVATE PKF_Lib OptMathKernels)
+enable_lto_if_supported(test_particle_const)
+nlf_add_warning_flags(test_particle_const)
+
+# Warning flags are now applied uniformly via nlf_add_warning_flags() (see root
+# CMakeLists.txt). Per-target compile options are kept only for -O3 selection.
 
 # Optimization for Release
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_options(pkf_example PRIVATE -O3)
     target_compile_options(pkf_test PRIVATE -O3)
+    target_compile_options(test_particle_const PRIVATE -O3)
 endif()
 
 # --- Vulkan Shader Deployment ---

@@ -21,12 +21,25 @@ set(SOURCES
 add_executable(ukf_test ${SOURCES})
 target_link_libraries(ukf_test Eigen3::Eigen OptMathKernels)
 enable_lto_if_supported(ukf_test)
+nlf_add_warning_flags(ukf_test)
 
 # SRUKF Test Executable
 add_executable(srukf_test main_srukf.cpp)
 target_link_libraries(srukf_test Eigen3::Eigen OptMathKernels)
 enable_lto_if_supported(srukf_test)
+nlf_add_warning_flags(srukf_test)
 
 # UKF vs SRUKF Comparison (disabled - source files not present)
 # add_executable(compare_ukf_srukf compare_ukf_srukf.cpp)
 # add_executable(simple_comparison simple_comparison.cpp)
+
+# --- Regression tests introduced by the audit-remediation pass ---
+add_executable(test_ukf_numerical tests/test_ukf_numerical.cpp)
+target_link_libraries(test_ukf_numerical Eigen3::Eigen OptMathKernels)
+enable_lto_if_supported(test_ukf_numerical)
+nlf_add_warning_flags(test_ukf_numerical)
+
+add_executable(test_srukf_initialize tests/test_srukf_initialize.cpp)
+target_link_libraries(test_srukf_initialize Eigen3::Eigen OptMathKernels)
+enable_lto_if_supported(test_srukf_initialize)
+nlf_add_warning_flags(test_srukf_initialize)
