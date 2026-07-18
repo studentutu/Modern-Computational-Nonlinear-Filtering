@@ -21,3 +21,5 @@ nlfvenv/
 .cache/
 install/
 cuda-keyring*.deb
+.claude/
+.mcp.json
