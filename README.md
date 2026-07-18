@@ -73,8 +73,9 @@ Eigen fallback path` and the build proceeds normally.
 
 A build configured with **every** SIMD tier off and portable codegen —
 `-DNLF_ENABLE_NEON=OFF -DNLF_ENABLE_SVE2=OFF -DNLF_ENABLE_NATIVE_ARCH=OFF`, i.e. what a
-brand-new architecture gets on day one — compiles, runs, and passes **30/30** CTest
-cases, exactly as the NEON build does. Comparing benchmark RMSE between the two builds:
+brand-new architecture gets on day one — compiles, runs, and passes the full
+CTest suite (see the exact count breakdown below), exactly as the NEON build
+does. Comparing benchmark RMSE between the two builds:
 
 | Benchmark problem | Eigen-only vs. NEON |
 |-------------------|---------------------|
@@ -170,11 +171,17 @@ Four problems tested with UKF, SRUKF, and fixed-lag smoothers. Benchmarks run th
 | **B** — ARM aarch64 | Raspberry Pi 5 (Cortex-A76, 4 cores), NEON + Vulkan (V3D), no CUDA, no SVE2 | accuracy re-verification, portability comparison (run 14 July 2026) |
 
 Accuracy figures below were produced on host A and re-verified unchanged on host B.
-CTest is **30/30** on both (12 filter/benchmark tests registered by this repo + 18
-OptimizedKernels GPU/SIMD tests). The exact dependency suite varies with the build:
-host A additionally exercises the CUDA kernel tests and selects the discrete GPU for
-the Vulkan suites; host B runs the same Vulkan suites on the VideoCore V3D and skips
-CUDA.
+CTest passes on both. This repo registers **16** filter/benchmark tests
+(the original 12 plus `EKF_Smoother`, `UKF_Smoother`, `UKF_Numerical`,
+`SRUKF_Initialize`, `PKF_ParticleConst`, `RBPF_LogDet` — the smoother
+regressions and the four audit-remediation regressions); OptimizedKernels
+adds 15–18 more, depending on what the build detects (CUDA adds
+`test_cuda_kernels`, SVE2-capable ARM CPUs add `test_sve2_kernels`).
+Host A gets 32/32 (16 filter + 16 OptMath, no SVE2). Host B gets 31/31
+(16 filter + 15 OptMath, no CUDA, no SVE2). The exact dependency suite
+varies with the build: host A additionally exercises the CUDA kernel
+tests and selects the discrete GPU for the Vulkan suites; host B runs
+the same Vulkan suites on the VideoCore V3D and skips CUDA.
 
 Reproduce everything below with:
 
@@ -595,7 +602,7 @@ make -j$(nproc)
 
 # Portable / redistributable binary, or a brand-new architecture: turn off every
 # SIMD tier and native-CPU tuning. The filters fall back to Eigen and still pass
-# 30/30 ctest (see Portability).
+# the full ctest suite (see Portability for the exact count breakdown).
 cmake .. -DCMAKE_BUILD_TYPE=Release \
          -DNLF_ENABLE_NEON=OFF -DNLF_ENABLE_SVE2=OFF -DNLF_ENABLE_NATIVE_ARCH=OFF
 make -j$(nproc)

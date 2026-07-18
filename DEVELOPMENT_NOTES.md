@@ -488,9 +488,11 @@ failure).
   attached to C++ TUs (CUDA TUs are skipped — nvcc does not consistently
   forward `-fsanitize=…`).
 - `.github/workflows/ci.yml` — two-job matrix (Release build + ctest;
-  RelWithDebInfo + sanitizers). Both jobs pre-clone OptMathKernels into
-  `$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA` before configuring so
-  that the FetchContent site resolves.
+  RelWithDebInfo + sanitizers). Both jobs pre-clone OptMathKernels
+  v0.5.15 to `$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA` and pass
+  `-DOPTMATH_DIR=$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA`
+  `-DNLF_BUILD_PYTHON_VENV=OFF` to CMake, matching the sibling-directory
+  provisioning contract in the root `CMakeLists.txt`.
 
 Full suite passes in Release and under ASan+UBSan on the development host;
 benchmark accuracy is unchanged from v3.4.1.

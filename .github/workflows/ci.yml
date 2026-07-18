@@ -33,9 +33,11 @@ jobs:
             python3-venv \
             python3-pip
 
-      # OptMathKernels v0.5.15 must live at $HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA
-      # so the FetchContent GIT_REPOSITORY line in the root CMakeLists.txt resolves.
-      # Pinning the tag here keeps CI reproducible even if upstream moves.
+      # OptMathKernels is picked up via -DOPTMATH_DIR=<path> (see root
+      # CMakeLists.txt "Dependency: OptMathKernels" block). We pre-clone it
+      # to $HOME rather than the default sibling location so CI's working
+      # tree stays clean, then point OPTMATH_DIR at that clone. Pinning
+      # v0.5.15 here keeps CI reproducible even if upstream `main` moves.
       - name: Pre-clone OptMathKernels v0.5.15 to $HOME
         run: |
           git clone --depth 1 --branch v0.5.15 \
@@ -46,7 +48,9 @@ jobs:
         run: |
           cmake -S . -B build \
             -GNinja \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOPTMATH_DIR="$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA" \
+            -DNLF_BUILD_PYTHON_VENV=OFF
 
       - name: Build
         run: cmake --build build -j
@@ -91,7 +95,9 @@ jobs:
           cmake -S . -B build-asan \
             -GNinja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DNLF_ENABLE_SANITIZERS=ON
+            -DNLF_ENABLE_SANITIZERS=ON \
+            -DOPTMATH_DIR="$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA" \
+            -DNLF_BUILD_PYTHON_VENV=OFF
 
       - name: Build
         run: cmake --build build-asan -j
