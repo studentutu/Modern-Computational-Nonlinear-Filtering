@@ -5,6 +5,8 @@
 #include <Eigen/QR>
 #include <Eigen/Cholesky>
 #include <iostream>
+#include <cmath>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 #include "StateSpaceModel.h"
@@ -61,14 +63,15 @@ public:
      */
     void initialize(const State& x0, const StateMat& P0) {
         x_ = x0;
-        // Dimension-adaptive parameters for SRUKF
-        // Low/medium dimensions: alpha=1.0 for better weak observability handling
-        // High dimensions: alpha=1e-3 to prevent numerical issues
+        // Dimension-adaptive parameters for SRUKF (alpha=1.0 in both regimes; the
+        // earlier alpha=1e-3 for high NX was removed in the audit because it made
+        // Wm(0)/Wc(0) hugely negative and destabilized the 10D coupled-oscillator
+        // case). Only kappa varies with dimension.
         if (kappa < 0) {
             beta = 2.0f;  // Optimal for Gaussian
             if (NX <= 5) {
                 alpha = 1.0f;
-                kappa = 3.0f - static_cast<float>(NX);
+                kappa = 3.0f - static_cast<float>(NX);  // classic n+kappa = 3
             } else {
                 alpha = 1.0f;
                 kappa = 0.0f;
@@ -214,8 +217,7 @@ public:
             // Wrap angular state differences to [-π, π]
             for (int j = 0; j < NX; ++j) {
                 if (model_.isAngularState(j)) {
-                    while (diff(j) > M_PI) diff(j) -= 2.0f * M_PI;
-                    while (diff(j) < -M_PI) diff(j) += 2.0f * M_PI;
+                    diff(j) = std::remainder(diff(j), 2.0f * std::numbers::pi_v<float>);
                 }
             }
             float wc_sign = (sigmas.Wc(i) >= 0) ? 1.0f : -1.0f;
@@ -235,8 +237,7 @@ public:
         // Wrap angular state differences to [-π, π]
         for (int j = 0; j < NX; ++j) {
             if (model_.isAngularState(j)) {
-                while (diff_0(j) > M_PI) diff_0(j) -= 2.0f * M_PI;
-                while (diff_0(j) < -M_PI) diff_0(j) += 2.0f * M_PI;
+                diff_0(j) = std::remainder(diff_0(j), 2.0f * std::numbers::pi_v<float>);
             }
         }
         float wc_0 = sigmas.Wc(0);
@@ -250,8 +251,7 @@ public:
                     State d = X_pred.col(i) - x_pred_mean;
                     for (int j2 = 0; j2 < NX; ++j2) {
                         if (model_.isAngularState(j2)) {
-                            while (d(j2) > M_PI) d(j2) -= 2.0f * M_PI;
-                            while (d(j2) < -M_PI) d(j2) += 2.0f * M_PI;
+                            d(j2) = std::remainder(d(j2), 2.0f * std::numbers::pi_v<float>);
                         }
                     }
                     P_full += sigmas.Wc(i) * (d * d.transpose());
@@ -279,10 +279,8 @@ public:
             // Wrap angular state differences to [-π, π]
             for (int j = 0; j < NX; ++j) {
                 if (model_.isAngularState(j)) {
-                    while (diff_pred(j) > M_PI) diff_pred(j) -= 2.0f * M_PI;
-                    while (diff_pred(j) < -M_PI) diff_pred(j) += 2.0f * M_PI;
-                    while (diff_x(j) > M_PI) diff_x(j) -= 2.0f * M_PI;
-                    while (diff_x(j) < -M_PI) diff_x(j) += 2.0f * M_PI;
+                    diff_pred(j) = std::remainder(diff_pred(j), 2.0f * std::numbers::pi_v<float>);
+                    diff_x(j) = std::remainder(diff_x(j), 2.0f * std::numbers::pi_v<float>);
                 }
             }
             Dp.col(i) = diff_pred;
@@ -378,12 +376,19 @@ public:
         Eigen::Matrix<float, NY, NSIG> Dy;
         for (int i = 0; i < NSIG; ++i) {
             Dy.col(i) = Y_pred.col(i) - y_hat;
+            // Wrap angular OBSERVATION deviations to [-π, π] (R32): for an
+            // angular observable a raw (Y - y_hat) can straddle the ±π branch
+            // cut.  Mirrors the angular state-difference wrap just below.
+            for (int j = 0; j < NY; ++j) {
+                if (model_.isAngularObservation(j)) {
+                    Dy(j, i) = std::remainder(Dy(j, i), 2.0f * std::numbers::pi_v<float>);
+                }
+            }
             State diff_x = sigmas.X.col(i) - x_;
             // Wrap angular state differences to [-π, π]
             for (int j = 0; j < NX; ++j) {
                 if (model_.isAngularState(j)) {
-                    while (diff_x(j) > M_PI) diff_x(j) -= 2.0f * M_PI;
-                    while (diff_x(j) < -M_PI) diff_x(j) += 2.0f * M_PI;
+                    diff_x(j) = std::remainder(diff_x(j), 2.0f * std::numbers::pi_v<float>);
                 }
             }
             Dx_w.col(i) = sigmas.Wc(i) * diff_x;
@@ -404,21 +409,42 @@ public:
 
         // 7. State Update with innovation gating
         Observation innovation = y_k - y_hat;
+        // Wrap angular OBSERVATION innovations to [-π, π] (R32): for an angular
+        // observable (e.g. an interferometer cone angle) a raw (y_k - y_hat)
+        // straddling the ±π branch cut would read ~2π instead of ~0 and inject
+        // a catastrophic correction.  No-op for non-angular observations.
+        for (int j = 0; j < NY; ++j) {
+            if (model_.isAngularObservation(j)) {
+                innovation(j) = std::remainder(innovation(j), 2.0f * std::numbers::pi_v<float>);
+            }
+        }
 
-        // Gate the innovation to prevent catastrophic updates from outliers
+        // Gate the innovation to prevent catastrophic updates from outliers.
+        // mahal_dist_sq = innovᵀ (S_yy S_yyᵀ)⁻¹ innov is the normalized innovation
+        // squared (NIS) -- the rigorous consistency statistic (NOT an R-only
+        // approximation) -- stored in last_nis_ for monitoring (R33).
         Eigen::Matrix<float, NY, 1> temp_innov = S_yy.template triangularView<Eigen::Lower>().solve(innovation);
         float mahal_dist_sq = temp_innov.squaredNorm();
+        last_nis_ = mahal_dist_sq;     // expose NIS for monitoring (R33)
         const float gate_threshold = innovation_gate_chi2_;
 
         float scale = 1.0f;
         if (mahal_dist_sq > gate_threshold) {
-            // Scale down large corrections
-            scale = std::sqrt(gate_threshold / mahal_dist_sq);
+            ++gated_count_;
+            // R33: optionally REJECT the outlier (zero correction) instead of
+            // down-scaling it; default (reject_outliers_ = false) preserves the
+            // original down-scaling behaviour.
+            scale = reject_outliers_ ? 0.0f
+                                     : std::sqrt(gate_threshold / mahal_dist_sq);
             if (!warned_gate_) {
                 std::clog << "[SRUKF] innovation gate active (chi2="
                           << mahal_dist_sq << " > threshold="
-                          << gate_threshold << "); scaling correction by "
-                          << scale << ". Further gate events will be silent."
+                          << gate_threshold << "); "
+                          << (reject_outliers_ ? "rejecting correction"
+                                               : "scaling correction by ")
+                          << (reject_outliers_ ? std::string{}
+                                               : std::to_string(scale))
+                          << ". Further gate events will be silent."
                           << std::endl;
                 warned_gate_ = true;
             }
@@ -430,7 +456,22 @@ public:
         // 8. Covariance Update using square root form
         // P = P - K*S_yy*S_yy^T*K^T = S*S^T - K*S_yy*S_yy^T*K^T
         // Use QR to compute: [S^T, (K*S_yy)^T]^T and extract updated S
-        Eigen::Matrix<float, NX, NY> U = K * S_yy;
+        //
+        // The downdate MUST stay consistent with the gated state correction
+        // (R33), which applies an effective gain `scale*K`. The Joseph form for a
+        // suboptimal gain s*K,
+        //     P+ = (I - sKH) P (I - sKH)^T + s^2 K R K^T,
+        // reduces to  P+ = P - (2s - s^2) * K*P_yy*K^T  (using K*P_yy*K^T = KHP).
+        // So the consistent square-root downdate scales each column of K*S_yy by
+        //     downdate_scale = sqrt(2s - s^2)   (=> U*U^T = (2s - s^2)*K*P_yy*K^T).
+        // Endpoints: s=1 -> full update (2s-s^2 = 1); s=0 (rejected outlier) ->
+        // zero downdate, so a discarded measurement never shrinks the covariance
+        // into false certainty. NOTE: a plain `scale` here (an s^2 reduction) is
+        // NOT Joseph-consistent for a partial (0<s<1) update and leaves the
+        // covariance over-conservative — use 2s - s^2. The factor 2s - s^2 =
+        // 1 - (1 - s)^2 >= 0, so the downdate also stays PSD-safe.
+        const float downdate_scale = std::sqrt(std::max(0.0f, 2.0f * scale - scale * scale));
+        Eigen::Matrix<float, NX, NY> U = downdate_scale * (K * S_yy);
 
         // Try rank-1 downdates, but detect if they fail
         StateMat S_updated = S_;
@@ -443,7 +484,7 @@ public:
             // Fallback: compute P directly and take Cholesky
             // P_new = P - K * P_yy * K^T = S*S^T - K*S_yy*S_yy^T*K^T
             StateMat P_curr = S_ * S_.transpose();
-            StateMat KPyyKT = U * U.transpose();  // U = K*S_yy, so U*U^T = K*S_yy*S_yy^T*K^T
+            StateMat KPyyKT = U * U.transpose();  // U = sqrt(2s-s^2)*K*S_yy, so U*U^T = (2s-s^2)*K*S_yy*S_yy^T*K^T (Joseph partial-update, consistent with the gated state correction)
             StateMat P_new = P_curr - KPyyKT;
 
             // Ensure positive definiteness
@@ -493,10 +534,23 @@ public:
     void setState(const State& x) { x_ = x; }
     void setSqrtCovariance(const StateMat& S) { S_ = S; }
 
+    // --- Consistency monitoring & outlier policy (R33) ---
+    // last_nis_ is the normalized innovation squared (NIS) from the most recent
+    // update() -- the rigorous chi-squared statistic, not an R-only proxy.
+    float getLastNIS() const { return last_nis_; }
+    // Count of updates whose NIS exceeded the gate (scaled or rejected).
+    unsigned getGatedCount() const { return gated_count_; }
+    // When true, a gated outlier is REJECTED (zero correction) rather than
+    // down-scaled.  Default false preserves the original behaviour.
+    void setRejectOutliers(bool reject) { reject_outliers_ = reject; }
+
 private:
     Model& model_;
     State x_;
     StateMat S_;  // Square root of covariance (Cholesky factor)
+    float last_nis_ = 0.0f;         // NIS from the most recent update (R33)
+    unsigned gated_count_ = 0;      // count of gated/rejected updates (R33)
+    bool reject_outliers_ = false;  // reject (vs down-scale) gated outliers (R33)
 
     // Innovation-gate configuration.
     float innovation_gate_chi2_ = 25.0f;

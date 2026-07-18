@@ -6,6 +6,7 @@
 #include "EKF.h"
 #include "EKFFixedLag.h"
 #include "NonlinearOscillator.h"
+#include "TestCheck.h"
 
 /** Generate a single sample from N(mean, stddev^2) using a fixed-seed RNG. */
 float randn(float mean, float stddev) {
@@ -139,6 +140,23 @@ int main() {
 
     file.close();
     std::cout << "Results saved to ekf_results.csv" << std::endl;
+
+    // Registered as the EKF_Test CTest case, so these must gate the exit code.
+    // This program had no non-zero exit path at all: making EKF::update() a no-op
+    // degraded the filter RMSE 11x (0.0597 -> 0.677) and it still reported green.
+    //
+    // These are also the ONLY automated assertions covering EKFFixedLag -- the
+    // full-interval EKFSmoother is tested separately (tests/test_ekf_smoother.cpp),
+    // and it is a second, independent implementation of the same RTS recursion, so
+    // its assertions cannot catch a defect in this one.
+    //
+    // Deterministic run (static std::mt19937 gen(42), EKF/main.cpp:12): filter
+    // 0.0596747, smoother 0.0519059 at lag 10. Ceilings ~25% above.
+    NLF_CHECK(smooth_count > 0, "fixed-lag smoother produced estimates");
+    NLF_CHECK(std::isfinite(rmse_filt) && std::isfinite(rmse_smooth), "RMSE is finite");
+    NLF_CHECK(rmse_smooth < rmse_filt, "fixed-lag smoothing reduces RMSE");
+    NLF_CHECK(rmse_filt < 0.075, "filter RMSE within absolute bound");
+    NLF_CHECK(rmse_smooth < 0.065, "smoother RMSE within absolute bound");
 
     return 0;
 }

@@ -4,7 +4,10 @@
 #include <random>
 #include <chrono>
 #include <Eigen/Dense>
+#include <string>
+#include <cmath>
 #include "FilterMath.h"
+#include "TestCheck.h"
 
 #include "BenchmarkProblems.h"
 #include "BenchmarkRunner.h"
@@ -21,6 +24,33 @@ using namespace Benchmark;
  * Cholesky from FilterMath for noise covariance factorization.
  */
 template<typename Model>
+// ============================================================================
+//  Timestep alignment  (read before touching any filter loop below)
+// ============================================================================
+// This generator defines the convention the whole suite is scored against:
+//
+//     true_states[i]   = x_i,  the state at times[i]
+//     measurements[i]  = h(x_i, times[i]) + v      -- y_i observes x_i AT t_i
+//     true_states[i+1] = f(x_i, times[i]) + w      -- f is evaluated at the
+//                                                     SOURCE time, not the target
+//
+// Two consequences the filter loops must respect:
+//
+//  1. `initialize()` places the estimate at times[0], so iteration 0 must NOT
+//     predict -- y_0 already observes the state being held. The loops used to
+//     call predict() unconditionally, which advanced the estimate to times[1],
+//     fused y_0 (an observation of x_0) into it, and scored the result against
+//     true_states[0]. Every stored estimate sat one step ahead of the truth it
+//     was compared with, biasing every published RMSE.
+//
+//  2. `predict(t)` evaluates model.f(x, t): t names where the state currently
+//     IS, not where it is going. Advancing from t_{i-1} to t_i therefore takes
+//     times[i-1]. Passing times[i] propagated from the wrong end of the
+//     interval, which matters for any time-varying model (BearingOnlyTracking's
+//     observer position is a function of t).
+//
+// The same distinction is why SmootherType::step() takes both a `t_prev` and a
+// `t_k` rather than one time for both roles.
 auto generate_trajectory(Model& model,
                         const typename Model::State& x0,
                         float T_final,
@@ -127,7 +157,10 @@ BenchmarkMetrics run_ukf_benchmark(Model& model,
     for (size_t i = 0; i < data.times.size(); ++i) {
         auto step_start = std::chrono::high_resolution_clock::now();
 
-        filter.predict(data.times[i], u);
+        // See "Timestep alignment" above generate_trajectory(): no propagation on
+        // iteration 0 (the estimate is already at times[0]), and predict() takes
+        // the time the state is currently AT, hence times[i-1].
+        if (i > 0) filter.predict(data.times[i - 1], u);
         filter.update(data.times[i], data.measurements[i]);
 
         auto step_end = std::chrono::high_resolution_clock::now();
@@ -183,7 +216,10 @@ BenchmarkMetrics run_srukf_benchmark(Model& model,
     for (size_t i = 0; i < data.times.size(); ++i) {
         auto step_start = std::chrono::high_resolution_clock::now();
 
-        filter.predict(data.times[i], u);
+        // See "Timestep alignment" above generate_trajectory(): no propagation on
+        // iteration 0 (the estimate is already at times[0]), and predict() takes
+        // the time the state is currently AT, hence times[i-1].
+        if (i > 0) filter.predict(data.times[i - 1], u);
         filter.update(data.times[i], data.measurements[i]);
 
         auto step_end = std::chrono::high_resolution_clock::now();
@@ -241,7 +277,11 @@ BenchmarkMetrics run_ukf_smoother_benchmark(Model& model,
     for (size_t i = 0; i < data.times.size(); ++i) {
         auto step_start = std::chrono::high_resolution_clock::now();
 
-        smoother.step(data.times[i], data.measurements[i], u);
+        // See "Timestep alignment" above generate_trajectory(). Iteration 0 fuses
+        // y_0 where the estimate already is; from then on we propagate from
+        // times[i-1] to times[i] and fuse the measurement taken at times[i].
+        if (i == 0) smoother.observe_initial(data.times[0], data.measurements[0]);
+        else        smoother.step(data.times[i - 1], data.times[i], data.measurements[i], u);
 
         auto step_end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<float, std::milli> step_duration = step_end - step_start;
@@ -312,7 +352,11 @@ BenchmarkMetrics run_srukf_smoother_benchmark(Model& model,
     for (size_t i = 0; i < data.times.size(); ++i) {
         auto step_start = std::chrono::high_resolution_clock::now();
 
-        smoother.step(data.times[i], data.measurements[i], u);
+        // See "Timestep alignment" above generate_trajectory(). Iteration 0 fuses
+        // y_0 where the estimate already is; from then on we propagate from
+        // times[i-1] to times[i] and fuse the measurement taken at times[i].
+        if (i == 0) smoother.observe_initial(data.times[0], data.measurements[0]);
+        else        smoother.step(data.times[i - 1], data.times[i], data.measurements[i], u);
 
         auto step_end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<float, std::milli> step_duration = step_end - step_start;
@@ -500,12 +544,20 @@ int main() {
 
         auto data = generate_trajectory(model, x0, 30.0f, 0.1f, 44);
 
+        // Divergence threshold scaled to this problem. The target starts at
+        // (200,0) and travels ~300 m over 30 s, giving a steady-state tracking
+        // RMSE ~= 64 m. The default 10.0 threshold is far below that scale, so
+        // it flagged ~65% of steps as "divergences" even though NEES shows the
+        // filter is perfectly consistent. 500 m marks genuine loss-of-track
+        // (well above steady-state error), analogous to reentry's 5 km gate.
+        float bearing_div_thresh = 500.0f;
+
         // UKF
         {
             auto data_copy = data;
             data_copy.filtered_states.clear();
             data_copy.filtered_covs.clear();
-            auto metrics = run_ukf_benchmark(model, data_copy, x0, P0, "BearingOnly4D");
+            auto metrics = run_ukf_benchmark(model, data_copy, x0, P0, "BearingOnly4D", bearing_div_thresh);
             metrics.print();
             metrics.save_to_csv(summary_file);
             all_metrics.push_back(metrics);
@@ -517,7 +569,7 @@ int main() {
             auto data_copy = data;
             data_copy.filtered_states.clear();
             data_copy.filtered_covs.clear();
-            auto metrics = run_srukf_benchmark(model, data_copy, x0, P0, "BearingOnly4D");
+            auto metrics = run_srukf_benchmark(model, data_copy, x0, P0, "BearingOnly4D", bearing_div_thresh);
             metrics.print();
             metrics.save_to_csv(summary_file);
             all_metrics.push_back(metrics);
@@ -532,7 +584,7 @@ int main() {
             data_copy.smoothed_states.clear();
             data_copy.smoothed_covs.clear();
             auto metrics = run_srukf_smoother_benchmark(model, data_copy, x0, P0,
-                                                         "BearingOnly4D", 30);
+                                                         "BearingOnly4D", 30, bearing_div_thresh);
             metrics.print();
             metrics.save_to_csv(summary_file);
             all_metrics.push_back(metrics);
@@ -612,6 +664,103 @@ int main() {
     std::cout << "\n\n========== Benchmark Complete ==========" << std::endl;
     std::cout << "Results saved to benchmark_results.csv" << std::endl;
     std::cout << "Trajectory files saved with prefix: coupled_osc_, vanderpol_, bearing_, reentry_" << std::endl;
+
+    // ------------------------------------------------------------------
+    //  Regression gate (this binary is registered as the Benchmarks CTest case)
+    // ------------------------------------------------------------------
+    // Gates on ACCURACY and CONSISTENCY only, never on step time. RMSE/NEES are
+    // backend- and host-independent, so they mean the same thing on every machine;
+    // wall-clock does not, and this suite has no warmup or repetitions, so a timing
+    // gate would just flake on any loaded or slower box.
+    //
+    // RMSE is gated against a per-(filter, problem) baseline with a two-sided
+    // relative band, NOT a loose ceiling. Every RMSE/NEES figure here is
+    // deterministic -- the generators are seeded, and re-running this suite
+    // reproduces them bit-identically (only the wall-clock columns move). The
+    // tolerance therefore absorbs cross-host floating-point reassociation, which is
+    // orders of magnitude smaller, and nothing else.
+    //
+    // The band is two-sided deliberately. A one-sided ceiling only notices a filter
+    // getting worse. The last real defect here -- the one-timestep misalignment
+    // fixed in 3dbbf4c -- moved reentry RMSE by 0.589%, and the ~25% ceilings that
+    // replaced this table were baselined on the *buggy* values and reported PASS for
+    // its entire lifetime. Drift in either direction is a regression signal; an
+    // intentional improvement is expected to update this table in the same commit.
+    static constexpr float kRmseTol = 0.005f;  // 0.5%: tight enough for the 0.589% class
+    struct RmseBaseline {
+        const char* filter;
+        const char* problem;
+        float rmse;           // filtered RMSE
+        float rmse_smoothed;  // smoothed RMSE; 0 for rows that do not smooth
+    };
+    const RmseBaseline baselines[] = {
+        {"UKF",            "CoupledOscillators10D",   1.45655f,   0.0f},
+        {"SRUKF",          "CoupledOscillators10D",   1.45655f,   0.0f},
+        {"UKF+Smoother",   "CoupledOscillators10D",   1.45655f,   1.14768f},
+        {"SRUKF+Smoother", "CoupledOscillators10D",   1.45655f,   1.14768f},
+        {"UKF",            "VanDerPol2D",             0.468888f,  0.0f},
+        {"SRUKF",          "VanDerPol2D",             0.467096f,  0.0f},
+        {"SRUKF+Smoother", "VanDerPol2D",             0.467096f,  0.430381f},
+        {"UKF",            "BearingOnly4D",          63.4902f,    0.0f},
+        {"SRUKF",          "BearingOnly4D",          63.8392f,    0.0f},
+        {"SRUKF+Smoother", "BearingOnly4D",          63.8392f,   51.6818f},
+        {"UKF",            "ReentryVehicle6D",      366.868f,     0.0f},
+        {"SRUKF",          "ReentryVehicle6D",      367.115f,     0.0f},
+        {"SRUKF+Smoother", "ReentryVehicle6D",      367.115f,   236.251f},
+    };
+
+    std::cout << "\n--- Regression gate ---" << std::endl;
+    NLF_CHECK(all_metrics.size() == 13,
+              "benchmark suite produced all 13 filter/problem rows");
+
+    for (const auto& m : all_metrics) {
+        const std::string tag = m.filter_name + " on " + m.problem_name;
+
+        NLF_CHECK(std::isfinite(m.rmse_overall) && m.rmse_overall > 0.0f,
+                  ("filtered RMSE is finite and positive: " + tag).c_str());
+        NLF_CHECK(m.num_divergences == 0,
+                  ("filter did not diverge: " + tag).c_str());
+
+        // A smoother that does not improve on the filter it smooths is broken.
+        if (m.rmse_smoothed_overall > 0.0f) {
+            NLF_CHECK(std::isfinite(m.rmse_smoothed_overall),
+                      ("smoothed RMSE is finite: " + tag).c_str());
+            NLF_CHECK(m.rmse_smoothed_overall < m.rmse_overall,
+                      ("smoothing reduces RMSE: " + tag).c_str());
+        }
+
+        // NEES consistency: a filter whose covariance no longer describes its own
+        // error lands far outside the 95% band. The floor is deliberately slack
+        // (measured 94.5-99.6%) so only a gross inconsistency trips it.
+        NLF_CHECK(std::isfinite(m.median_nees) && m.median_nees > 0.0f,
+                  ("median NEES is finite and positive: " + tag).c_str());
+        NLF_CHECK(m.nees_valid > 0, ("NEES had well-conditioned samples: " + tag).c_str());
+        NLF_CHECK(m.pct_in_bounds >= 80.0f,
+                  ("NEES stays inside the 95% chi-square band: " + tag).c_str());
+
+        const RmseBaseline* base = nullptr;
+        for (const auto& b : baselines) {
+            if (m.problem_name == b.problem && m.filter_name == b.filter) {
+                base = &b;
+                break;
+            }
+        }
+        // Without this, a row whose name matches no entry would skip the RMSE gate
+        // silently -- the failure mode being that adding a filter appears to pass.
+        NLF_CHECK(base != nullptr, ("row is covered by an RMSE baseline: " + tag).c_str());
+
+        NLF_CHECK(std::abs(m.rmse_overall - base->rmse) <= kRmseTol * base->rmse,
+                  ("filtered RMSE matches baseline within 0.5%: " + tag).c_str());
+
+        if (base->rmse_smoothed > 0.0f) {
+            NLF_CHECK(std::abs(m.rmse_smoothed_overall - base->rmse_smoothed)
+                          <= kRmseTol * base->rmse_smoothed,
+                      ("smoothed RMSE matches baseline within 0.5%: " + tag).c_str());
+        }
+    }
+    std::cout << "PASS: " << all_metrics.size()
+              << " rows matched RMSE baselines within " << (kRmseTol * 100.0f)
+              << "%, NEES-consistent, no divergences" << std::endl;
 
     return 0;
 }

@@ -20,13 +20,18 @@ struct BenchmarkMetrics {
     std::string problem_name;
 
     // Error metrics
-    float rmse_position = 0.0f;
-    float rmse_velocity = 0.0f;
+    //
+    // Per-subvector (position/velocity) RMSE is deliberately NOT reported. Fields
+    // for it existed here and were emitted as RMSE_Position / RMSE_Velocity, but
+    // nothing ever assigned them, so every published value was a hard 0.0 rather
+    // than a measurement. compute_rmse_indices() below implements the calculation
+    // and is ready to use; wiring it up needs a per-problem index map (which state
+    // components are "position" is model-specific and not always well-defined --
+    // ReentryVehicle's 6D state includes a ballistic coefficient that is neither),
+    // so that is left as a deliberate choice for whoever adds it.
     float rmse_overall = 0.0f;
 
     // Smoothed metrics (if applicable)
-    float rmse_smoothed_position = 0.0f;
-    float rmse_smoothed_velocity = 0.0f;
     float rmse_smoothed_overall = 0.0f;
 
     // NEES consistency metrics
@@ -42,21 +47,27 @@ struct BenchmarkMetrics {
     float total_time_ms = 0.0f;
 
     // Convergence metrics
-    float convergence_time = 0.0f;  // Time to reach steady-state error
+    //
+    // convergence_time is NaN when the filter never converged. It previously
+    // returned the final timestamp in that case, which is indistinguishable from
+    // having genuinely converged on the last step -- 6 of the suite's 13 rows
+    // (all Bearing-Only and all Reentry) reported that sentinel as if it were a
+    // measurement. NaN propagates honestly: it prints as "did not converge",
+    // serialises to an empty CSV cell, and leaves a gap in the plots instead of
+    // a fabricated data point.
+    float convergence_time = std::numeric_limits<float>::quiet_NaN();
     int num_divergences = 0;         // Number of times error exceeded threshold
+
+    bool converged() const { return !std::isnan(convergence_time); }
 
     /** Print a formatted summary of all metrics for this filter/problem pair. */
     void print() const {
         std::cout << std::setprecision(6);
         std::cout << "\n=== " << filter_name << " on " << problem_name << " ===" << std::endl;
         std::cout << "Filtered RMSE: " << rmse_overall << std::endl;
-        std::cout << "  Position: " << rmse_position << std::endl;
-        std::cout << "  Velocity: " << rmse_velocity << std::endl;
 
         if (rmse_smoothed_overall > 0) {
             std::cout << "Smoothed RMSE: " << rmse_smoothed_overall << std::endl;
-            std::cout << "  Position: " << rmse_smoothed_position << std::endl;
-            std::cout << "  Velocity: " << rmse_smoothed_velocity << std::endl;
         }
 
         // NEES consistency line
@@ -72,7 +83,9 @@ struct BenchmarkMetrics {
 
         std::cout << "Avg Step Time: " << avg_step_time_ms << " ms" << std::endl;
         std::cout << "Total Time: " << total_time_ms << " ms" << std::endl;
-        std::cout << "Convergence Time: " << convergence_time << " s" << std::endl;
+        std::cout << "Convergence Time: ";
+        if (converged()) std::cout << convergence_time << " s" << std::endl;
+        else             std::cout << "did not converge" << std::endl;
         std::cout << "Divergences: " << num_divergences << std::endl;
     }
 
@@ -81,25 +94,23 @@ struct BenchmarkMetrics {
         file << filter_name << ","
              << problem_name << ","
              << rmse_overall << ","
-             << rmse_position << ","
-             << rmse_velocity << ","
              << rmse_smoothed_overall << ","
-             << rmse_smoothed_position << ","
-             << rmse_smoothed_velocity << ","
              << median_nees << ","
              << pct_in_bounds << ","
              << nees_valid << ","
              << nees_total << ","
              << avg_step_time_ms << ","
-             << total_time_ms << ","
-             << convergence_time << ","
-             << num_divergences << std::endl;
+             << total_time_ms << ",";
+        // Empty cell rather than a number when the filter never converged: pandas
+        // and every spreadsheet read it as missing, which is what it is.
+        if (converged()) file << convergence_time;
+        file << "," << num_divergences << std::endl;
     }
 
     /** Write the CSV column header row for benchmark results. */
     static void write_csv_header(std::ofstream& file) {
-        file << "Filter,Problem,RMSE_Overall,RMSE_Position,RMSE_Velocity,"
-             << "RMSE_Smoothed_Overall,RMSE_Smoothed_Position,RMSE_Smoothed_Velocity,"
+        file << "Filter,Problem,RMSE_Overall,"
+             << "RMSE_Smoothed_Overall,"
              << "Median_NEES,Pct_In_Bounds,NEES_Valid,NEES_Total,"
              << "Avg_Step_Time_ms,Total_Time_ms,"
              << "Convergence_Time,Num_Divergences" << std::endl;
@@ -295,7 +306,18 @@ void compute_nees(const std::vector<State>& true_states,
 }
 
 /**
- * Detect convergence time - when error falls below threshold and stays there
+ * Detect convergence time - when error falls below threshold and stays there.
+ *
+ * Returns NaN if the filter never converges, so a non-convergence cannot be
+ * mistaken for a measurement.
+ *
+ * `threshold` is an ABSOLUTE error norm, not a relative one, so it only means
+ * anything against a problem whose error scale is comparable to it. Every call
+ * site in run_benchmarks.cpp passes 1.0; the 0.5 default is not used. Problems
+ * whose error scale far exceeds the threshold (BearingOnly ~64, ReentryVehicle
+ * ~369) therefore never converge by this definition and always report NaN --
+ * that is a real property of the metric, not a filter failure. Reporting it
+ * usefully for those problems needs a per-problem or relative threshold.
  */
 template<typename State>
 float compute_convergence_time(const std::vector<float>& times,
@@ -303,7 +325,7 @@ float compute_convergence_time(const std::vector<float>& times,
                                 const std::vector<State>& estimated_states,
                                 float threshold = 0.5f) {
     if (true_states.size() != estimated_states.size()) {
-        return -1.0f;
+        return std::numeric_limits<float>::quiet_NaN();
     }
 
     const int window_size = 50;  // Must stay below threshold for this many steps
@@ -322,7 +344,7 @@ float compute_convergence_time(const std::vector<float>& times,
         }
     }
 
-    return times.back();  // Didn't converge
+    return std::numeric_limits<float>::quiet_NaN();  // Never converged
 }
 
 /**

@@ -7,7 +7,17 @@ endif()
 
 # Header-only library for PKF core
 add_library(PKF_Lib INTERFACE)
-target_include_directories(PKF_Lib INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+# Common/include carries FilterMath.h and TestCheck.h. EKF/ and UKF/ already put it
+# on the include path; PKF did not, which is why particle_filter_gpu.hpp reaches for
+# it as "../../Common/include/FilterMath.h" -- a relative escape that breaks once
+# install(DIRECTORY) flattens every -I root into a single include/nlf.
+# $<BUILD_INTERFACE>/$<INSTALL_INTERFACE>: PKF_Lib is part of the exported nlf
+# package, and install(EXPORT) rejects bare source-tree paths on an exported
+# target. The install root is the flat <prefix>/include/nlf.
+target_include_directories(PKF_Lib INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/Common/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/nlf>)
 target_link_libraries(PKF_Lib INTERFACE Eigen3::Eigen)
 
 # Link OpenMP if available
@@ -51,6 +61,7 @@ endif()
 unset(VEC_ADD_SHADER_SPV CACHE)
 find_file(VEC_ADD_SHADER_SPV "vec_add.comp.spv"
     PATHS
+        ${OPTMATH_BINARY_DIR}/src
         ${optimizedkernels_BINARY_DIR}/src
         ${OptimizedKernels_BINARY_DIR}/src
     NO_DEFAULT_PATH
@@ -62,6 +73,7 @@ find_file(VEC_ADD_SHADER_SPV "vec_add.comp.spv"
 unset(VEC_ADD_SHADER_SRC CACHE)
 find_file(VEC_ADD_SHADER_SRC "vec_add.comp.glsl"
     PATHS
+        ${OPTMATH_SOURCE_DIR}/src/vulkan/shaders
         ${optimizedkernels_SOURCE_DIR}/src/vulkan/shaders
         ${OptimizedKernels_SOURCE_DIR}/src/vulkan/shaders
     NO_DEFAULT_PATH
@@ -103,6 +115,6 @@ elseif(VEC_ADD_SHADER_SRC)
     endif()
 else()
     message(WARNING "Could not find vec_add.comp.spv or vec_add.comp.glsl in OptimizedKernels dependency.")
-    message(STATUS "Search paths tried (Binary): ${optimizedkernels_BINARY_DIR}/src")
-    message(STATUS "Search paths tried (Source): ${optimizedkernels_SOURCE_DIR}/src/vulkan/shaders")
+    message(STATUS "Search paths tried (Binary): ${OPTMATH_BINARY_DIR}/src")
+    message(STATUS "Search paths tried (Source): ${OPTMATH_SOURCE_DIR}/src/vulkan/shaders")
 endif()

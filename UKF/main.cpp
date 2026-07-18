@@ -6,6 +6,7 @@
 #include "UKF.h"
 #include "UnscentedFixedLagSmoother.h"
 #include "DragBallModel.h"
+#include "TestCheck.h"
 
 using namespace UKFCore;
 using namespace UKFModel;
@@ -104,8 +105,10 @@ int main() {
     for (int k = 1; k < steps; ++k) {
         float t = k * model.dt;
 
-        // Step (Predict k-1 -> k, Update k)
-        smoother.step(t, measurements[k], u_dummy);
+        // Step (Predict k-1 -> k, Update k) -- now said in the call rather than
+        // only in this comment: step() takes the propagate-from time and the
+        // measurement time separately, because they are different times.
+        smoother.step((k - 1) * model.dt, t, measurements[k], u_dummy);
 
         // Current Filtered State (k)
         DragBallModel::State x_filt = smoother.get_filtered_state();
@@ -153,11 +156,24 @@ int main() {
     std::cout << "Smoothed Position RMSE (Lagged):  " << rmse_smooth_pos << std::endl;
     std::cout << "Results written to ukf_results.csv" << std::endl;
 
-    if (rmse_smooth_pos < rmse_filt_pos) {
-        std::cout << "SUCCESS: Smoothing reduced error." << std::endl;
-    } else {
-        std::cout << "WARNING: Smoothing did not reduce error (might be short lag or noise tuning)." << std::endl;
-    }
+    // Registered as the UKF_Test CTest case, so these must gate the exit code.
+    // This block previously printed a WARNING here and returned 0 anyway: it
+    // computed the correct verdict, then discarded it. CTest hides stdout by
+    // default, so a regression this program had already detected still reported
+    // green. Verified: with lag = 0 the smoother cannot improve on the filter,
+    // and the case now exits 1 instead of passing with a printed warning.
+    //
+    // Deterministic run (std::mt19937 gen(42), line 28): filtered 0.228281,
+    // smoothed 0.11947. Ceilings sit ~25% above; the ratio check alone passes
+    // whenever both estimates degrade together.
+    NLF_CHECK(count > 0, "fixed-lag smoother produced estimates");
+    NLF_CHECK(std::isfinite(rmse_filt_pos) && std::isfinite(rmse_smooth_pos),
+              "position RMSE is finite");
+    NLF_CHECK(rmse_smooth_pos < rmse_filt_pos,
+              "fixed-lag smoothing reduces position RMSE");
+    NLF_CHECK(rmse_filt_pos < 0.29, "filtered position RMSE within absolute bound");
+    NLF_CHECK(rmse_smooth_pos < 0.15, "smoothed position RMSE within absolute bound");
 
+    std::cout << "SUCCESS: Smoothing reduced error." << std::endl;
     return 0;
 }

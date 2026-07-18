@@ -34,16 +34,20 @@ public:
     /**
      * @brief Predict step: x = A*x + bias, P = A*P*A^T + Q
      */
-    void predict(const Eigen::Ref<const Eigen::MatrixXf>& A,
+    // Fixed-size A (Nlin x Nlin, compile-time) so mat_vec_mul/gemm bind to the
+    // FilterMath fixed-size fast path: stack-allocated, no runtime backend
+    // dispatch, no heap-allocated intermediates. This matters because the RBPF
+    // calls predict()/update() once per particle per step (thousands of times).
+    void predict(const typename Types::Matrix_A& A,
                  const Eigen::Ref<const LinearState>& bias,
                  const LinearCov& Q) {
         // x_k|k-1 = A * x_{k-1|k-1} + bias
-        Eigen::VectorXf Ax = filtermath::mat_vec_mul(A, Eigen::VectorXf(x));
+        LinearState Ax = filtermath::mat_vec_mul(A, x);
         x = Ax + bias;
 
         // P_k|k-1 = A * P * A^T + Q
-        Eigen::MatrixXf AP = filtermath::gemm(A, P);
-        Eigen::MatrixXf APAt = filtermath::gemm(AP, A.transpose());
+        LinearCov AP = filtermath::gemm(A, P);
+        LinearCov APAt = filtermath::gemm(AP, A.transpose());
 
         P = APAt + Q;
 
@@ -54,38 +58,41 @@ public:
     /**
      * @brief Update step using Joseph form for stability.
      */
+    // Fixed-size H (Ny x Nlin, compile-time). All intermediates are fixed-size so
+    // every gemm/mat_vec below takes the FilterMath fixed-size fast path; only the
+    // final kalman_gain SPD solve remains on the dynamic path (small Nlin x Ny).
     void update(const Eigen::Ref<const Observation>& y,
-                const Eigen::Ref<const Eigen::MatrixXf>& H,
+                const typename Types::Matrix_H& H,
                 const Eigen::Ref<const Observation>& offset,
                 const ObsCov& R) {
         // Innovation: z = y - (H*x + offset)
-        Eigen::VectorXf Hx = filtermath::mat_vec_mul(H, Eigen::VectorXf(x));
+        Observation Hx = filtermath::mat_vec_mul(H, x);
         Observation z = y - (Hx + offset);
 
         // Innovation covariance: S = H*P*H^T + R
-        Eigen::MatrixXf HP = filtermath::gemm(H, P);
-        Eigen::MatrixXf HPHt = filtermath::gemm(HP, H.transpose());
+        Eigen::Matrix<float, Types::Ny, Types::Nlin> HP = filtermath::gemm(H, P);
+        ObsCov HPHt = filtermath::gemm(HP, H.transpose());
         ObsCov S = HPHt + R;
 
         // Kalman gain via SPD solve (more stable than explicit inverse)
-        Eigen::MatrixXf PHt = filtermath::gemm(P, H.transpose());
+        typename Types::CrossCov PHt = filtermath::gemm(P, H.transpose());
         Eigen::Matrix<float, Types::Nlin, Types::Ny> K = filtermath::kalman_gain(PHt, S);
 
         // Update state: x = x + K*z
-        Eigen::VectorXf Kz = filtermath::mat_vec_mul(K, Eigen::VectorXf(z));
+        LinearState Kz = filtermath::mat_vec_mul(K, z);
         x = x + Kz;
 
         // Update covariance (Joseph form): P = (I - KH)P(I - KH)^T + KRK^T
-        Eigen::Matrix<float, Types::Nlin, Types::Nlin> I = Eigen::Matrix<float, Types::Nlin, Types::Nlin>::Identity();
+        LinearCov I = LinearCov::Identity();
 
-        Eigen::MatrixXf KH = filtermath::gemm(K, H);
-        Eigen::Matrix<float, Types::Nlin, Types::Nlin> I_KH = I - KH;
+        LinearCov KH = filtermath::gemm(K, H);
+        LinearCov I_KH = I - KH;
 
-        Eigen::MatrixXf P_I_KH_T = filtermath::gemm(P, I_KH.transpose());
-        Eigen::MatrixXf Term1 = filtermath::gemm(I_KH, P_I_KH_T);
+        LinearCov P_I_KH_T = filtermath::gemm(P, I_KH.transpose());
+        LinearCov Term1 = filtermath::gemm(I_KH, P_I_KH_T);
 
-        Eigen::MatrixXf RKt = filtermath::gemm(R, K.transpose());
-        Eigen::MatrixXf Term2 = filtermath::gemm(K, RKt);
+        Eigen::Matrix<float, Types::Ny, Types::Nlin> RKt = filtermath::gemm(R, K.transpose());
+        LinearCov Term2 = filtermath::gemm(K, RKt);
 
         P = Term1 + Term2;
 

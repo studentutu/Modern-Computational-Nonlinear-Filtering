@@ -129,24 +129,30 @@ public:
         // State update
         x_ = x_ + K * y_diff;
 
-        // Covariance update — Joseph-consistent path with LLT/LDLT recovery ladder.
+        // Covariance update — Joseph-style symmetric four-term form defended by
+        // a multi-tier recovery ladder.
         //
-        // The sigma-point UKF does not carry an explicit measurement Jacobian H, so the
-        // canonical Joseph form (I - K H) P (I - K H)^T + K R K^T cannot be assembled
-        // directly. Instead we use the equivalent P = P - K S K^T (symmetrized) and defend
-        // it with a relative-jitter recovery ladder that mirrors SRUKF.h:66-88.
-        Eigen::MatrixXf KS = filtermath::gemm(K, S);
-        StateMat P_new = P_ - filtermath::gemm(KS, K.transpose());
+        // Form: P = P - K*Pxy^T - Pxy*K^T + K*S*K^T. Algebraically identical to
+        // P - K*S*K^T (since Pxy = K*S makes K*Pxy^T = Pxy*K^T = K*S*K^T), but
+        // symmetric by construction so rounding partially cancels — the same
+        // PSD-preserving intent as the EKF/RBPF Joseph updates, without needing
+        // an explicit H. Fixed-size types (NX/NY known at compile time) keep
+        // every gemm on FilterMath.h's compile-time fast path.
+        Eigen::Matrix<float, NX, NY> KS    = filtermath::gemm(K, S);
+        StateMat                     KSKt  = filtermath::gemm(KS, K.transpose());
+        StateMat                     KPxyT = filtermath::gemm(K, Pxy.transpose());
+        StateMat P_new = P_ - KPxyT - KPxyT.transpose() + KSKt;
         P_new = 0.5f * (P_new + P_new.transpose());
 
-        // First LLT check
+        // Recovery ladder: LLT → LLT+relative-jitter → LDLT reconstruction →
+        // diagonal clamp. Mirrors SRUKF.h so both filters have identical
+        // numerical defenses.
         Eigen::LLT<StateMat> llt_check(P_new);
         if (llt_check.info() == Eigen::Success) {
             P_ = P_new;
         } else {
-            // Relative jitter: 1e-6 floor with 1e-8 * trace(P)/NX scaling so that
-            // well-conditioned but numerically-fuzzed matrices are recovered without
-            // artificially inflating small-covariance states.
+            // Relative jitter: 1e-6 floor with 1e-8 * trace(P)/NX scaling so
+            // small-covariance states are not artificially inflated.
             float trace_over_n = std::max(P_new.trace() / static_cast<float>(NX), 0.0f);
             float jitter = std::max(1e-6f, 1e-8f * trace_over_n);
             StateMat P_jitter = P_new + jitter * StateMat::Identity();

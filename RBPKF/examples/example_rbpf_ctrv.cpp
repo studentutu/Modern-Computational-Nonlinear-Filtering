@@ -1,7 +1,9 @@
 #include "rbpf/rbpf_core.hpp"
+#include "TestCheck.h"
 #include <iostream>
 #include <fstream>
 #include <iomanip>
+#include <cmath>
 
 constexpr int N_NL = 1;
 constexpr int N_LIN = 4;
@@ -187,7 +189,19 @@ int main() {
                   << est_lin(0) << "," << est_lin(1) << "," << std::sqrt(err_sq) << std::endl;
     }
 
-    std::cout << "Average RMSE: " << std::sqrt(total_sq_err / static_cast<float>(steps)) << std::endl;
+    const float avg_rmse = std::sqrt(total_sq_err / static_cast<float>(steps));
+    std::cout << "Average RMSE: " << avg_rmse << std::endl;
+
+    // Registered as the RBPF_CTRV CTest case, so these must gate the exit code;
+    // this program previously had no non-zero exit path.
+    //
+    // The RBPF is seeded (config.seed = 42) and reproducible for a given thread
+    // count, but the OpenMP work split shifts results slightly across thread counts
+    // (measured: 1.54182 at 1 thread, 1.56901 at 4). The ceiling clears both with
+    // room to spare -- it catches divergence or a broken conditional KF, not drift.
+    NLF_CHECK(std::isfinite(avg_rmse), "average RMSE is finite");
+    NLF_CHECK(avg_rmse > 0.0f, "average RMSE is positive");
+    NLF_CHECK(avg_rmse < 2.5f, "average RMSE within absolute bound");
 
     return 0;
 }

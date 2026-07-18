@@ -5,9 +5,9 @@
 **High-Performance Nonlinear State Estimation for Embedded Systems**
 
 [![C++20](https://img.shields.io/badge/C++-20-blue.svg)](https://isocpp.org/)
-[![Platform](https://img.shields.io/badge/Platform-ARM%20aarch64%20%2B%20x86__64-red.svg)](https://www.raspberrypi.com/)
+[![Portable](https://img.shields.io/badge/Portable-any%20C%2B%2B20%20target-red.svg)](https://isocpp.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Optimization](https://img.shields.io/badge/Optimization-NEON%20%2B%20SVE2%20%2B%20Vulkan%20%2B%20CUDA*-orange.svg)](https://developer.arm.com/Architectures/Neon)
+[![Optional acceleration](https://img.shields.io/badge/Optional-NEON%20%7C%20SVE2%20%7C%20Vulkan%20%7C%20CUDA-orange.svg)](https://developer.arm.com/Architectures/Neon)
 
 </div>
 
@@ -16,6 +16,7 @@
 ## Table of Contents
 
 - [Overview](#overview)
+- [Portability](#portability)
 - [Implemented Filters](#implemented-filters)
 - [Benchmark Results](#benchmark-results)
 - [Numerical Stability Guide](#numerical-stability-guide)
@@ -31,24 +32,62 @@
 
 ## Overview
 
-This repository provides nonlinear filtering implementations optimized for **ARM aarch64** (Raspberry Pi 5, Orange Pi 5/6) and **x86_64** using **ARM NEON/SVE2 intrinsics**, **Vulkan compute shaders**, and **NVIDIA CUDA**. All implementations use single-precision floating point (`float`) for maximum SIMD vectorization efficiency.
+This repository provides nonlinear filtering implementations in **portable C++20 + Eigen**, with **optional** SIMD and GPU acceleration (ARM NEON/SVE2 intrinsics, Vulkan compute shaders, NVIDIA CUDA). The filters themselves are architecture-neutral: `Common/include/FilterMath.h` resolves the available backend tiers at compile time and falls back to plain Eigen, so the library builds and produces equivalent results on **any** C++20 target — with no accelerator backend at all. All implementations use single-precision floating point (`float`), which suits SIMD vectorization where it is available.
 
 ### What's Included
 
 - **5 Filtering Methods**: EKF, UKF, SRUKF, PKF, RBPKF
-- **Fixed-Lag Smoothers**: Rauch-Tung-Striebel (RTS) backward pass and ancestry-based smoothing
-- **Comprehensive Benchmarks**: 4 challenging test problems with full metrics (10D coupled oscillators, Van der Pol, bearing-only tracking, reentry vehicle)
-- **Hardware Acceleration**: NEON dense linear algebra + Vulkan particle operations + CUDA GPU acceleration via [OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA) (OptMathKernels), pinned to release tag **[v0.5.15](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.15)**
+- **Smoothers**: fixed-lag RTS, full-interval (batch) RTS with optional iteration (an IEKS for the EKF), and ancestry-based particle smoothing
+- **Comprehensive Benchmarks**: 4 test problems in the default suite with full metrics (10D coupled oscillators, Van der Pol, bearing-only tracking, reentry vehicle)
+- **Optional Acceleration**: NEON/SVE2 dense linear algebra, Vulkan compute, and CUDA via [OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA) (OptMathKernels), consumed as a sibling source tree built with `add_subdirectory` (currently **v0.6.3**; no pinned release tag)
 
-### Platform Support
+---
 
-| Platform | Acceleration | Status |
-|----------|--------------|--------|
-| ARM aarch64 (Pi 5, Orange Pi) | NEON + SVE2 + Vulkan | **Full Support** |
-| x86_64 Linux | Vulkan + OpenMP + Eigen | **Full Support** |
-| NVIDIA GPU (CUDA 12.x / 13.x) | cuBLAS GEMM + GPU Particle Filter | **Full Support** (SM 75–120) |
+## Portability
 
-> **Note**: CUDA 12.x covers Turing through Hopper (SM 75–90). CUDA 13.x adds Blackwell — including consumer RTX 50-series (**SM 120**, e.g. RTX 5070/5080/5090). Verified on an RTX 5070 Ti (SM 120) with CUDA 13.1; also rebuilt cleanly with CUDA 13.0.88 on Linux 6.17 NVIDIA kernel (multi-arch default). To build for your exact GPU, configure with `-DCMAKE_CUDA_ARCHITECTURES=native -DOPTMATH_CUDA_NATIVE=ON`. See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) for details.
+The filters are portable C++; only the backends are architecture-specific, and every
+backend is optional. The build detects the **target** architecture
+(`CMAKE_SYSTEM_PROCESSOR`, cross-compile aware) and reports it at configure time:
+
+```
+-- Target architecture: ARM64
+-- SIMD backends: NEON=ON SVE2=ON (SVE2 sources are skipped unless the CPU implements it)
+-- Native CPU tuning: -mcpu=native
+```
+
+ARM-only backends are never forced onto a non-ARM target; on any other architecture
+the same configure step reports `SIMD backends: none for <arch> - filter math uses the
+Eigen fallback path` and the build proceeds normally.
+
+### Acceleration Tiers (all optional)
+
+| Backend | Where it applies | Default | Notes |
+|---------|------------------|---------|-------|
+| **Eigen** (baseline) | every C++20 target | always | The fallback. Correct and complete on its own — no other tier is required. |
+| **NEON** | ARM (`aarch64`/`armv8`, `arm`) | ON for ARM targets | Cholesky, GEMM, mat-vec, SPD solve. `-DNLF_ENABLE_NEON=OFF` to disable. |
+| **SVE2** | ARM CPUs that implement SVE2 (Cortex-A720+, e.g. Orange Pi 5/6) | ON for ARM targets | Cache-blocked GEMM with FCMA/I8MM. Sources are skipped on ARM CPUs without SVE2 (such as the Pi 5's Cortex-A76), so leaving it ON on a non-SVE2 ARM board is harmless. |
+| **Vulkan** | any target with a Vulkan 1.2+ SDK/driver | ON, auto-skipped with no SDK | Compute backend in OptMathKernels. See the note under [Features](#hardware-optimization) about which operations actually reach the GPU. |
+| **CUDA** | NVIDIA GPUs, SM 75–120 | auto-detected via `nvcc` | cuBLAS GEMM + GPU particle filter. CUDA 12.x = SM 75–90; 13.x adds Blackwell (SM 100/120). |
+
+### Verified: the library does not need a SIMD backend
+
+A build configured with **every** SIMD tier off and portable codegen —
+`-DNLF_ENABLE_NEON=OFF -DNLF_ENABLE_SVE2=OFF -DNLF_ENABLE_NATIVE_ARCH=OFF`, i.e. what a
+brand-new architecture gets on day one — compiles, runs, and passes **30/30** CTest
+cases, exactly as the NEON build does. Comparing benchmark RMSE between the two builds:
+
+| Benchmark problem | Eigen-only vs. NEON |
+|-------------------|---------------------|
+| Coupled Oscillators 10D | bit-identical |
+| Van der Pol 2D | bit-identical |
+| Bearing-Only 4D | 0.0008% difference |
+| Reentry 6D | 0.02% difference |
+
+The two non-zero deltas are pure floating-point association (Eigen's summation order
+vs. NEON's), not a behavioural difference. Accuracy is a property of the filters, not
+of the backend; **only wall-clock timings change.**
+
+> **Note on CUDA architectures**: CUDA 12.x covers Turing through Hopper (SM 75–90). CUDA 13.x adds Blackwell — including consumer RTX 50-series (**SM 120**, e.g. RTX 5070/5080/5090). To build for your exact GPU, configure with `-DCMAKE_CUDA_ARCHITECTURES=native -DOPTMATH_CUDA_NATIVE=ON`. See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) for details.
 
 ---
 
@@ -60,7 +99,7 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 
 - **Method**: First-order Taylor series approximation
 - **Requirements**: Explicit Jacobian matrices
-- **Smoothing**: RTS fixed-lag backward pass
+- **Smoothing**: RTS fixed-lag backward pass (`EKF/include/EKFFixedLag.h`) + full-interval iterated RTS / IEKS (`EKF/include/EKFSmoother.h`)
 - **Best For**: Mildly nonlinear systems, fast prototyping
 - **Location**: `EKF/`
 
@@ -70,10 +109,10 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 
 - **Method**: Deterministic sampling via Merwe scaled unscented transform
 - **Parameters**: Dimension-adaptive (alpha=1.0, beta=2.0, kappa=3-n)
-- **Smoothing**: RTS with cross-covariance tracking
+- **Smoothing**: RTS with cross-covariance tracking — fixed-lag (`UKF/include/UnscentedFixedLagSmoother.h`) + full-interval iterated (`UKF/include/UKFSmoother.h`)
 - **Best For**: Highly nonlinear systems where Jacobians are unavailable or expensive
 - **Location**: `UKF/`
-- **Optimization**: SVE2/NEON-accelerated GEMM, Cholesky, SPD solve via FilterMath dispatch
+- **Optimization**: GEMM, Cholesky and SPD solve go through the FilterMath dispatch — SVE2/NEON where present, Eigen otherwise
 
 ### 3. Square Root UKF (SRUKF)
 
@@ -86,7 +125,7 @@ This repository provides nonlinear filtering implementations optimized for **ARM
   - Innovation gating prevents catastrophic updates
   - Safe Cholesky downdate with automatic fallback to full recomputation
 - **Best For**: Mission-critical, long-duration, weak observability systems
-- **Location**: `UKF/include/SRUKF.h`
+- **Location**: `UKF/include/SRUKF.h`; smoothers in `UKF/include/SRUKFFixedLagSmoother.h` (fixed-lag) and `UKF/include/SRUKFSmoother.h` (full-interval, iterated)
 
 ### 4. Particle Filter (PKF)
 
@@ -97,7 +136,7 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 - **Smoothing**: Ancestry-based fixed-lag trajectory reconstruction
 - **Best For**: Non-Gaussian noise, multimodal distributions
 - **Location**: `PKF/`
-- **Optimization**: Vulkan GPU acceleration for N > 100 particles, OpenMP parallel propagation
+- **Optimization**: OpenMP parallel propagation; CUDA particle context auto-enabled at N >= 256 when built with CUDA. A Vulkan noise-addition path exists but rarely engages — see the [Vulkan note](#hardware-optimization) under Features.
 
 ### 5. Rao-Blackwellized Particle Filter (RBPKF)
 
@@ -113,9 +152,29 @@ This repository provides nonlinear filtering implementations optimized for **ARM
 
 ## Benchmark Results
 
-Four challenging problems tested with UKF, SRUKF, and fixed-lag smoothers. Benchmarks run through the FilterMath dispatch layer (CUDA cuBLAS / SVE2 / NEON / Eigen, selected at runtime by platform).
+Four problems tested with UKF, SRUKF, and fixed-lag smoothers. Benchmarks run through the FilterMath dispatch layer, which selects whatever backend the build provides (CUDA cuBLAS / SVE2 / NEON / Eigen) and computes the same result either way.
 
-> **Latest run**: 18 July 2026 (post audit-remediation) on the Z890 host, CUDA 13.0, GCC 13.3, Eigen 3.4, Vulkan 1.3, against **OptMathKernels v0.5.15** (pinned release tag). All **28/28** CTest cases pass — the original 24 plus four new regression tests introduced by the audit-remediation pass (UKF numerical / SRUKF initialize / PKF const-canary / RBPF log-det); benchmark RMSE and NEES numbers are numerically identical to the 25 May 2026 run to 3+ decimal places, so the correctness fixes ship no behavioural regression.
+> **How to read these numbers.** **RMSE, NEES and divergence counts are
+> backend- and host-independent** — they reproduce on any machine, with or without a
+> SIMD/GPU backend (see [Portability](#portability): an Eigen-only build is
+> bit-identical on two of the four problems and within 0.02% on the others).
+> **Wall-clock timings are host-specific and do not transfer.** Every timing below is
+> therefore attributed to the machine that produced it. No single machine is "the"
+> reference; the suite is run on several.
+
+**Hosts used below:**
+
+| Host | Configuration | Used for |
+|------|---------------|----------|
+| **A** — x86_64 | Ubuntu 26.04 LTS, RTX 5070 Ti Laptop GPU (Blackwell, SM 120), CUDA 13.1, Eigen 3.4, Vulkan 1.4 | timings in the summary table (run 8 July 2026) |
+| **B** — ARM aarch64 | Raspberry Pi 5 (Cortex-A76, 4 cores), NEON + Vulkan (V3D), no CUDA, no SVE2 | accuracy re-verification, portability comparison (run 14 July 2026) |
+
+Accuracy figures below were produced on host A and re-verified unchanged on host B.
+CTest is **30/30** on both (12 filter/benchmark tests registered by this repo + 18
+OptimizedKernels GPU/SIMD tests). The exact dependency suite varies with the build:
+host A additionally exercises the CUDA kernel tests and selects the discrete GPU for
+the Vulkan suites; host B runs the same Vulkan suites on the VideoCore V3D and skips
+CUDA.
 
 Reproduce everything below with:
 
@@ -126,13 +185,22 @@ source ../.nlfvenv/bin/activate                          # Python venv created b
 python3 ../scripts/plot_benchmarks.py .                  # writes the PNGs shown here
 ```
 
+`benchmark_results.csv` columns (one header row):
+
+```
+Filter,Problem,RMSE_Overall,RMSE_Smoothed_Overall,Median_NEES,Pct_In_Bounds,NEES_Valid,NEES_Total,Avg_Step_Time_ms,Total_Time_ms,Convergence_Time,Num_Divergences
+```
+
+`Convergence_Time` is left **empty** when the filter never met the convergence
+threshold — missing data reads as missing, in pandas and in a spreadsheet.
+
 ### Summary Across All Problems
 
 **Estimation accuracy** — filtered vs. smoothed RMSE and filter consistency (median NEES):
 
 ![RMSE / NEES comparison](docs/images/benchmark_rmse_comparison.png)
 
-**Computational cost** — per-step and total wall-clock time (x86_64 + Eigen path):
+**Computational cost** — per-step and total wall-clock time (**host A**; re-run the suite to get your own):
 
 ![Timing comparison](docs/images/benchmark_timing_comparison.png)
 
@@ -140,23 +208,38 @@ python3 ../scripts/plot_benchmarks.py .                  # writes the PNGs shown
 
 ![Convergence comparison](docs/images/benchmark_convergence_comparison.png)
 
-Consolidated metrics from the latest run (`benchmark_results.csv`):
+> **Caveat on the convergence panel**: `compute_convergence_time()`
+> (`Benchmarks/include/BenchmarkRunner.h`) uses a fixed **0.5-unit absolute** error
+> threshold, which is not meaningful for problems whose error scale is far larger —
+> Bearing-Only (~64) and Reentry (~369) legitimately never reach it. Those rows now
+> report an **empty** `Convergence_Time` cell and print "did not converge" rather
+> than silently emitting the final timestamp as if it were a measurement. Read that
+> panel for the Coupled-Oscillator and Van der Pol rows only.
 
-| Problem | Filter | RMSE | Smoothed RMSE | NEES median | In 95% | Avg step | Total | Div |
+Consolidated metrics (`benchmark_results.csv`). RMSE / NEES / Div are
+host-independent; **Avg step** and **Total** are from **host A**:
+
+| Problem | Filter | RMSE | Smoothed RMSE | NEES median | In 95% | Avg step (host A)† | Total (host A)† | Div |
 |---------|--------|-----:|--------------:|------------:|-------:|---------:|------:|----:|
 | Coupled Osc 10D | UKF | 1.457 | — | 9.89 | 94.5% | 0.0076 ms | 38.2 ms | 0 |
 | Coupled Osc 10D | SRUKF | 1.457 | — | 9.89 | 94.5% | 0.0082 ms | 41.5 ms | 0 |
 | Coupled Osc 10D | UKF+Smoother | 1.457 | **1.148** | 9.89 | 94.5% | 0.0275 ms | 138.0 ms | 0 |
 | Coupled Osc 10D | SRUKF+Smoother | 1.457 | **1.148** | 9.89 | 94.5% | 0.0400 ms | 201.1 ms | 0 |
-| Van der Pol 2D | UKF | 0.468 | — | 1.14 | 95.9% | 0.00039 ms | 0.81 ms | 0 |
-| Van der Pol 2D | SRUKF | 0.466 | — | 1.14 | 96.0% | 0.00027 ms | 0.57 ms | 0 |
-| Van der Pol 2D | SRUKF+Smoother | 0.466 | **0.430** | 1.14 | 96.0% | 0.0050 ms | 10.2 ms | 0 |
-| Bearing-Only 4D | UKF | 63.81 | — | 3.77 | 99.6% | 0.00052 ms | 0.16 ms | 176 |
-| Bearing-Only 4D | SRUKF | 64.17 | — | 3.77 | 99.6% | 0.00046 ms | 0.15 ms | 175 |
-| Bearing-Only 4D | SRUKF+Smoother | 64.17 | **52.03** | 3.77 | 99.6% | 0.0108 ms | 3.25 ms | 175 |
-| Reentry 6D | UKF | 369.0 | — | 5.00 | 95.9% | 0.0024 ms | 0.72 ms | 0 |
-| Reentry 6D | SRUKF | 369.2 | — | 4.99 | 95.6% | 0.0024 ms | 0.73 ms | 0 |
-| Reentry 6D | SRUKF+Smoother | 369.2 | **236.8** | 4.99 | 95.6% | 0.0176 ms | 5.30 ms | 0 |
+| Van der Pol 2D | UKF | 0.469 | — | 1.13 | 95.8% | 0.00039 ms | 0.81 ms | 0 |
+| Van der Pol 2D | SRUKF | 0.467 | — | 1.13 | 95.9% | 0.00027 ms | 0.57 ms | 0 |
+| Van der Pol 2D | SRUKF+Smoother | 0.467 | **0.430** | 1.13 | 95.9% | 0.0050 ms | 10.2 ms | 0 |
+| Bearing-Only 4D | UKF | 63.49 | — | 3.71 | 99.6% | 0.00052 ms | 0.16 ms | 0 |
+| Bearing-Only 4D | SRUKF | 63.84 | — | 3.72 | 99.6% | 0.00046 ms | 0.15 ms | 0 |
+| Bearing-Only 4D | SRUKF+Smoother | 63.84 | **51.68** | 3.72 | 99.6% | 0.0108 ms | 3.25 ms | 0 |
+| Reentry 6D | UKF | 366.9 | — | 4.99 | 95.9% | 0.0024 ms | 0.72 ms | 0 |
+| Reentry 6D | SRUKF | 367.1 | — | 4.99 | 95.9% | 0.0024 ms | 0.73 ms | 0 |
+| Reentry 6D | SRUKF+Smoother | 367.1 | **236.3** | 4.99 | 95.9% | 0.0176 ms | 5.30 ms | 0 |
+
+> † The accuracy columns were re-measured after the timestep-alignment fix
+> (commit `3dbbf4c`, which moved every RMSE by up to ~0.6%). The **host A timing
+> columns predate that fix and have not been re-measured there** — treat them as
+> indicative of relative cost, not as a matched run. Timings are the one thing you
+> should measure on your own hardware anyway.
 
 ### Coupled Oscillators (10D State, 5D Observation)
 
@@ -168,30 +251,38 @@ Ten coupled states tracked over 50 s; True, Filtered, and Smoothed curves are ne
 
 ![Van der Pol trajectories](docs/images/vanderpol_srukf_smooth_plot.png)
 
-Classic relaxation oscillator: slow drift in `x0` with sharp limit-cycle transitions in `x1` (the spikes near t≈1.5 s and t≈11 s). The filter captures the fast transitions without lag; the smoother visibly tightens the estimate in noisy stretches. Smoothing improves RMSE by **8%** (0.466 → 0.430). SRUKF is ~2× faster than UKF on this small problem.
+Classic relaxation oscillator: slow drift in `x0` with sharp limit-cycle transitions in `x1` (the spikes near t≈1.5 s and t≈11 s). The filter captures the fast transitions without lag; the smoother visibly tightens the estimate in noisy stretches. Smoothing improves RMSE by **8%** (0.467 → 0.430). SRUKF is ~1.4× faster than UKF on this small problem (consistent on both hosts).
 
 ### Bearing-Only Tracking (4D State, 1D Observation)
 
 ![Bearing-only trajectories](docs/images/bearing_srukf_smooth_plot.png)
 
-Weak-observability problem: angle-only measurements barely constrain range, so estimates track well for ~15 s then drift (visible divergence in all four states). Smoothing improves RMSE by **19%** (64.17 → 52.03) but cannot fully recover the lost range. The high "divergence" count (~175) reflects inherent observability limits during the early trajectory, not filter instability — NEES stays at 99.6% in-bounds throughout.
+Weak-observability problem: angle-only measurements barely constrain range, so the range estimate drifts (large steady-state RMSE ~64) even though the filter stays statistically consistent — NEES holds at **99.6% in-bounds** throughout. Smoothing improves RMSE by **19%** (63.84 → 51.68) but cannot fully recover the lost range. (Earlier runs reported a spurious ~175 "divergence" count here; that was a benchmark-metric bug — a fixed 10 m error threshold measured against this problem's ~64 m error scale — corrected in v3.3.0 with a problem-scaled 500 m threshold, so the divergence count is now **0**. The filter never actually diverged; NEES was in-bounds the whole time.)
 
 ### Reentry Vehicle (6D State, 3D Observation)
 
 ![Reentry vehicle trajectories](docs/images/reentry_srukf_smooth_plot.png)
 
-Realistic spacecraft reentry with altitude-dependent gravity (μ/r²), exponential-atmosphere drag, and a ground-based radar. Position states (`x0`–`x2`) track the truth almost exactly; the noisy velocity states (`x3`, `x5`) show the smoother clearly reducing noise relative to the filter. NEES median 4.99 (expected ~6) with 95.6% in bounds. Smoothing improves RMSE by **36%** (369.2 → 236.8) — the largest gain of the four problems.
+Realistic spacecraft reentry with altitude-dependent gravity (μ/r²), exponential-atmosphere drag, and a ground-based radar. Position states (`x0`–`x2`) track the truth almost exactly; the noisy velocity states (`x3`, `x5`) show the smoother clearly reducing noise relative to the filter. NEES median 4.99 (expected ~6) with 95.9% in bounds. Smoothing improves RMSE by **36%** (367.1 → 236.3) — the largest gain of the four problems.
 
 > **Note on the trajectory plots**: the Smoothed (red) curve is correctly aligned to the time it estimates and ends one fixed-lag window before the filtered curve (the smoother has no refined estimate for the most recent `lag` steps). Earlier revisions showed a spurious run of leading zeros here; that was a CSV-writer alignment bug (the RMSE numbers were always correct) and is fixed as of the latest commit.
 
 ### Filter & Smoother Test Results
 
+Each row is the filtered-vs-smoothed pair reported by that test's own smoother run
+(`ekf_test`, `ukf_test`, `srukf_test`, `pkf_example`), re-measured after the
+timestep-alignment fix:
+
 | Test | Filter RMSE | Smoother RMSE | Improvement |
 |------|-------------|---------------|-------------|
 | EKF (Nonlinear Oscillator, 2D) | 0.060 | 0.052 | 13% |
 | UKF (Drag Ball, 4D) | 0.228 | 0.119 | 48% |
-| SRUKF (Drag Ball, 4D) | 0.354 | 0.165 | 53% |
-| PKF (Lorenz-63, 3D) | 0.802 | 0.600 | 25% |
+| SRUKF (Drag Ball, 4D) | 0.311 | 0.167 | 46% |
+| PKF (Lorenz-63, 3D) | 0.813 | 0.604 | 26% |
+
+> The PKF row is a Monte-Carlo result on a chaotic system, so it moves slightly
+> from host to host (floating-point association changes which particles survive
+> resampling); the other three are deterministic and reproduce exactly.
 
 ### v3.0.0 Before/After Comparison
 
@@ -225,7 +316,14 @@ Comparison between v2.8.0 (commit `12b8015`, direct NEON calls, `-ffast-math`) a
 | SRUKF — Bearing-Only 4D | 43.151 | 43.151 |
 | SRUKF — Reentry 6D | 369.21 | 369.18 |
 
-Accuracy preserved to floating-point precision across all problems. NEES consistency unchanged (all pass chi-squared bounds).
+This is a **historical v2.8.0 → v3.0.0 regression snapshot**: it shows that the
+v3.0 dispatch-layer refactor preserved accuracy to floating-point precision for
+the problem configurations *as they were then*. The Bearing-Only scenario has
+since changed, so its figure here (43.151) does not match the current **63.84**
+in the main results table above — that main table is the authoritative current
+result; this row is retained only as a historical refactor-regression check and
+is not directly comparable to the current Bearing-Only run. NEES consistency
+unchanged (all pass chi-squared bounds).
 
 #### Robustness — Bug Fixes
 
@@ -289,16 +387,16 @@ State correction = scale * (K * innovation);
 
 ### Issue #4: Eigen Expression Template Aliasing in SRUKF Mean Computation
 
-**Problem**: SRUKF predict step returned INPUT state instead of PROPAGATED state, causing INS flywheel to fail during GPS outage. Position error grew to 3km in 30 seconds instead of expected ~1km.
+**Problem**: The SRUKF predict step's weighted-mean loop returned the INPUT state instead of the PROPAGATED state, so `predict()` appeared to leave the state unchanged.
 
 **Root Cause**: Eigen's expression templates caused aliasing between `X_pred` (propagated sigma points) and `sigmas.X` (input sigma points) during weighted mean computation. The operation `x_pred_mean += Wm(i) * X_pred.col(i)` was reading from `sigmas.X` memory instead of `X_pred`, even though they were separate stack-allocated matrices.
 
 **Symptoms**:
-- State appears unchanged after predict() during measurement outage
-- Debug shows X_pred values are correct, but weighted mean equals input
-- Double-precision accumulation gives correct result while float loop gives wrong result
+- State appears unchanged after `predict()`
+- Debug shows `X_pred` values are correct, but the weighted mean equals the input
+- Double-precision accumulation gives the correct result while the float loop gives the wrong one
 
-**Solution**: Force evaluation with `.eval()` to materialize the expression and break aliasing, combined with `.noalias()` for safe accumulation. This preserves NEON/SVE2 auto-vectorization (unlike the earlier raw C array workaround):
+**Solution**: Force evaluation with `.eval()` to materialize the expression and break aliasing, combined with `.noalias()` for safe accumulation. This preserves NEON/SVE2 auto-vectorization (unlike the earlier raw C array workaround). The fix lives in `UKF/include/SRUKF.h` (see the `X_pred_eval` / `Wm_eval` block):
 ```cpp
 // Force evaluation to break Eigen aliasing while keeping SIMD vectorization
 typename SigmaPts::SigmaMat X_pred_eval = X_pred.eval();
@@ -310,24 +408,9 @@ for (int i = 0; i < SigmaPts::NSIG; ++i) {
 }
 ```
 
-**Result**: Max error during 30s GPS outage reduced from 3097m to ~1080m.
+**Result**: `predict()` now propagates the state correctly; the coupled-oscillator and reentry benchmarks pass with zero divergences.
 
-### Issue #5: Monte Carlo Trial Divergence - RESOLVED
-
-**Problem**: After GPS outage, innovation gating in SRUKF prevented GPS reacquisition.
-
-**Root Causes Identified**:
-1. **Innovation gating too aggressive**: After 30s GPS outage, INS drifted ~3km. When GPS returned, the Mahalanobis distance was huge, causing updates to be scaled down to ~0.7% effectiveness
-2. **Compiler flags**: `EIGEN_NO_DEBUG` and `-ffast-math` caused numerical instability in edge cases
-
-**Solution Implemented**:
-1. Measurement outage recovery: When measurements return after outage with large position error, reinitialize filter around measurements instead of trying to correct with gated updates
-2. Disabled `-ffast-math` and `EIGEN_NO_DEBUG` for numerically sensitive targets
-3. All Cholesky operations now route through FilterMath dispatch (NEON-accelerated with Eigen fallback)
-
-**Result**: **100% convergence** across Monte Carlo trials.
-
-### Issue #6: Global `-ffast-math` Breaks Filter Stability
+### Issue #5: Global `-ffast-math` Breaks Filter Stability
 
 **Problem**: CMake root had `-ffast-math` and `EIGEN_FAST_MATH=1` applied globally to all Release builds. This silently caused:
 - NaN comparison guards (`isfinite()`, `allFinite()`) to be optimized away
@@ -336,13 +419,13 @@ for (int i = 0; i < SigmaPts::NSIG; ++i) {
 
 **Solution**: Removed global `-ffast-math` and `EIGEN_FAST_MATH=1` from root `CMakeLists.txt`. The NEON/SVE2 intrinsics in OptMathKernels already provide hardware-accelerated fast paths where needed. Numerically sensitive targets should explicitly set `-fno-fast-math` and `EIGEN_FAST_MATH=0`.
 
-### Issue #7: Unsafe Cholesky Downdate in SRUKF Prediction
+### Issue #6: Unsafe Cholesky Downdate in SRUKF Prediction
 
 **Problem**: The SRUKF predict step used the legacy `cholupdate_downdate()` which silently corrupted the square root covariance when the downdate magnitude exceeded the current factor (sets `r_sq = 1e-6 * S(k,k)²` instead of failing).
 
 **Solution**: Replaced with `cholupdate_downdate_safe()` which returns false on failure, plus a full-covariance fallback that recomputes P from all sigma points and takes a fresh Cholesky.
 
-### Issue #8: RBPKF Weight Corruption and Resampling Bias
+### Issue #7: RBPKF Weight Corruption and Resampling Bias
 
 **Problem**: Three related issues in the Rao-Blackwellized particle filter:
 1. `normalize_weights()` did not check `isfinite()` — a single NaN weight corrupted all particles
@@ -371,26 +454,38 @@ Before deploying any Kalman filter, verify:
 
 ### Hardware Optimization
 
-- **FilterMath Dispatch Layer** (`Common/include/FilterMath.h`): Unified API that automatically selects the best backend at runtime:
+- **FilterMath Dispatch Layer** (`Common/include/FilterMath.h`): Unified API that selects the best tier the build provides:
   - **GEMM**: CUDA cuBLAS → SVE2 cache-blocked → NEON blocked → Eigen
   - **Cholesky / Inverse / Solve**: NEON accelerated → Eigen LDLT fallback
   - **Kalman Gain**: SPD solve (avoids explicit matrix inverse for O(n²) vs O(n³))
-  - **Non-ARM platforms**: Falls through to Eigen (or CUDA if available)
-- **FilterMathGPU** (`Common/include/FilterMathGPU.h`): GPU-specific acceleration:
-  - **GPUBufferPool**: Reusable device allocations to minimize PCIe overhead
-  - **GPUSigmaContext\<NX\>**: GPU-accelerated sigma point operations for UKF/SRUKF
+  - **Any platform with no backend**: falls through to Eigen — always available, always correct
 - **Particle Filter GPU** (`PKF/include/particle_filter_gpu.hpp`): CUDA particle filter:
   - **GPUParticleContext\<NX\>**: Manages particles/weights on GPU
   - GPU log-sum-exp weight normalization
   - GPU systematic/stratified resampling
-  - Auto-enable for N >= 256 particles
+  - Auto-enable for N >= 256 particles (CUDA builds only; a no-CUDA build always uses the CPU path)
 - **ARM NEON Dense Linear Algebra**: Cholesky, GEMM, mat-vec multiply, SPD solve via [OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)
-- **ARM SVE2**: Cache-blocked GEMM with FCMA and I8MM on Cortex-A720+ (Orange Pi 5/6)
-- **Vulkan Compute**: Particle filter noise addition parallelized on GPU (Mali-G720, VideoCore VII, discrete GPUs). As of OptMathKernels v0.5.14, device selection prefers a **discrete GPU with a compute queue** over integrated/CPU fallbacks — on multi-GPU hosts the discrete card (e.g. RTX 5070 Ti) is chosen and logged at init.
+- **ARM SVE2**: Cache-blocked GEMM with FCMA and I8MM on Cortex-A720+ (e.g. Orange Pi 5/6). Not present on the Cortex-A76 (Raspberry Pi 5), where the SVE2 sources are simply skipped.
+- **Vulkan Compute**: Device selection prefers a **discrete GPU with a compute queue** over integrated/CPU fallbacks, and logs the choice at init.
 - **Graceful Fallback**: CUDA → SVE2 → NEON → Eigen with jitter + retry for numerical robustness
-- **Single Precision**: Consistent use of `float` for SIMD vectorization
+- **Single Precision**: Consistent use of `float`, which vectorizes well where SIMD is available
 
-> **CUDA Status**: Active for SM 75–90 (CUDA 12.x) and SM 75–120 incl. Blackwell RTX 50-series (CUDA 13.x). Verified on RTX 5070 Ti / SM 120 with CUDA 13.1 (see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md))
+> **Vulkan reality check**: the particle filter contains a Vulkan noise-addition path
+> (gated at `N > 100` in `PKF/include/particle_filter.hpp`), but OptMathKernels routes
+> elementwise operations below **2^20 elements** to the CPU
+> (`OPTMATH_VK_ELTWISE_MIN`, `src/vulkan/vulkan_backend.cpp`). The flattened buffer is
+> `N*NX` floats, so a 3-state model would need ~350,000 particles before anything
+> reaches the GPU. At realistic particle counts this path computes on the CPU. The
+> threshold is deliberate: on the tested integrated GPUs, dispatch overhead exceeds the
+> work for memory-bound elementwise kernels. Treat Vulkan here as available
+> infrastructure, not as an active accelerator for typical particle counts.
+
+> **FilterMathGPU status**: `Common/include/FilterMathGPU.h` (`GPUBufferPool`,
+> `GPUSigmaContext<NX>`) is **experimental and not yet wired in** — no filter currently
+> includes it, and the UKF/SRUKF paths go through `FilterMath.h`. It ships as a public
+> header for downstream experimentation only.
+
+> **CUDA Status**: Active for SM 75–90 (CUDA 12.x) and SM 75–120 incl. Blackwell RTX 50-series (CUDA 13.x). See [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md).
 
 ### Software Quality
 
@@ -405,16 +500,16 @@ Before deploying any Kalman filter, verify:
 
 ### Required
 
-- **C++20 Compiler**: GCC 10+, Clang 11+
-- **Eigen3**: Linear algebra (3.4+, fetched automatically if not found)
-- **CMake**: Build system (3.14+)
+- **C++20 Compiler**: GCC 10+, Clang 11+ (MSVC builds use `/O2`; no native-tuning flag is applied)
+- **Eigen3**: Linear algebra (3.4+, fetched automatically if not found). This is the only hard numerical dependency — everything below Eigen in the dispatch chain is optional.
+- **CMake**: Build system (**3.18+**). The root project declares 3.14, but the required OptMathKernels dependency is built via `add_subdirectory` and itself requires 3.18, so 3.18 is the effective floor.
 - **Python 3**: (3.10+) For visualization scripts; a virtual environment is created automatically during the build
-- **[OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)** (OptMathKernels): NEON/SVE2/Vulkan/CUDA acceleration (cloned to `$HOME`, fetched via FetchContent). **Pinned to a release tag** for reproducible builds — see `OPTMATH_RELEASE_TAG` in the root `CMakeLists.txt` (currently **v0.5.15**). Bumping it is a deliberate, audited step; see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) → *OptMathKernels Release Audit & Pinning Policy*.
+- **[OptimizedKernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA)** (OptMathKernels, currently **v0.6.3**): hosts the optional NEON/SVE2/Vulkan/CUDA kernels. **Required as a sibling directory** next to this repo and built via `add_subdirectory` directly from its **latest `main`** working tree (no pinned release tag). If it is missing, `./bootstrap.sh` offers to clone it over HTTPS and build for you, or configure with `-DAUTO_CLONE_DEPS=ON`. See [Build Instructions](#build-instructions).
 
 ### Optional
 
-- **ARM NEON/SVE2**: Automatic on ARM aarch64 platforms
-- **Vulkan SDK + glslang-tools**: For GPU-accelerated particle filter (Vulkan 1.3+); `glslang-tools` provides `glslangValidator` to compile GLSL shaders to SPIR-V
+- **ARM NEON/SVE2**: Enabled by default on ARM targets only (`NLF_ENABLE_NEON` / `NLF_ENABLE_SVE2`); never forced onto a non-ARM target
+- **Vulkan SDK + glslang-tools**: For the Vulkan compute backend (**Vulkan 1.2+** — the backend requests `VK_API_VERSION_1_2`); `glslang-tools` provides `glslangValidator` to compile GLSL shaders to SPIR-V. Auto-skipped when no SDK is found.
 - **NVIDIA CUDA Toolkit**: For GPU-accelerated GEMM and particle filter (12.x supports SM 75–90; 13.x adds Blackwell, incl. RTX 50-series SM 120). Ensure `nvcc` is on `PATH` (e.g. `export PATH=/usr/local/cuda/bin:$PATH`) so CMake detects it.
 - **OpenMP**: For parallel particle filter
 
@@ -430,7 +525,9 @@ sudo apt install glslang-tools
 # Optional: Vulkan runtime (if not already installed)
 sudo apt install vulkan-tools libvulkan-dev
 
-# Clone the OptimizedKernels dependency
+# The OptimizedKernels dependency is REQUIRED as a sibling directory next to this
+# repo. bootstrap.sh (see Build Instructions) will offer to clone it for you; to
+# provision it manually, clone it beside this repo so both live under the same parent:
 cd ~
 git clone https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA.git
 ```
@@ -453,7 +550,7 @@ nvcc --version          # should print the toolkit version
 nvidia-smi              # should list your GPU + driver
 ```
 
-> CUDA 13.x ships `nvcc` that accepts host GCC up to 15. The build forwards `-march=native` to the CUDA host compiler via `-Xcompiler`, so the C++ and CUDA translation units stay ABI-consistent (mismatched Eigen alignment between them otherwise corrupts the heap).
+> CUDA 13.x ships `nvcc` that accepts host GCC up to 15. When native tuning is active (`NLF_ENABLE_NATIVE_ARCH=ON`, the default), the build forwards the same probed arch flag to the CUDA host compiler via `-Xcompiler`, so the C++ and CUDA translation units stay ABI-consistent (on x86, mismatched Eigen alignment between them otherwise corrupts the heap).
 
 ---
 
@@ -464,17 +561,31 @@ nvidia-smi              # should list your GPU + driver
 git clone https://github.com/n4hy/Modern-Computational-Nonlinear-Filtering.git
 cd Modern-Computational-Nonlinear-Filtering
 
-# Create build directory
+# EASIEST: one-shot bootstrap. Checks for the required OptimizedKernels sibling
+# directory and, if it is missing, OFFERS to git-clone it (latest main) over
+# HTTPS, then configures + builds everything. Extra args pass through to CMake.
+./bootstrap.sh
+# ./bootstrap.sh -DNLF_BUILD_PYTHON_VENV=OFF     # e.g. skip the plotting venv
+
+# --- or configure manually ---------------------------------------------------
+# The build REQUIRES the OptimizedKernels source tree as a sibling directory
+# (../OptimizedKernelsForRaspberryPi5_NvidiaCUDA). It is built directly from its
+# local working tree (latest main). If it is absent, configuration fails with
+# instructions unless you pass -DAUTO_CLONE_DEPS=ON to clone it over HTTPS.
 mkdir -p build && cd build
 
-# Configure and build (CUDA auto-detected)
-# CMake will automatically create a Python venv at .nlfvenv/ and install dependencies
+# Configure and build (CUDA auto-detected). CMake also creates a Python venv at
+# .nlfvenv/ for the plotting scripts.
 cmake .. -DCMAKE_BUILD_TYPE=Release
 make -j$(nproc)
 
-# Recommended when CUDA is enabled: build for your exact GPU.
-# Required for Blackwell / RTX 50-series (SM 120) on CUDA 13.x, whose SM is not in
-# the default architecture list.
+# If the sibling dependency is not present, let CMake clone it (latest main):
+cmake .. -DCMAKE_BUILD_TYPE=Release -DAUTO_CLONE_DEPS=ON
+make -j$(nproc)
+
+# Optional: build CUDA code for your exact GPU only (faster nvcc, smaller binary).
+# On CUDA 13.x the default arch list already includes Blackwell SM 100/120, so this
+# is no longer required for RTX 50-series — it's just an optimization.
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=native -DOPTMATH_CUDA_NATIVE=ON
 make -j$(nproc)
 
@@ -482,9 +593,28 @@ make -j$(nproc)
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_COMPILER=""
 make -j$(nproc)
 
-# (Optional) system install — headers, libs, and Vulkan .spv shaders
-# go under CMAKE_INSTALL_PREFIX (default /usr/local; override with
-# -DCMAKE_INSTALL_PREFIX=/path when configuring).
+# Portable / redistributable binary, or a brand-new architecture: turn off every
+# SIMD tier and native-CPU tuning. The filters fall back to Eigen and still pass
+# 30/30 ctest (see Portability).
+cmake .. -DCMAKE_BUILD_TYPE=Release \
+         -DNLF_ENABLE_NEON=OFF -DNLF_ENABLE_SVE2=OFF -DNLF_ENABLE_NATIVE_ARCH=OFF
+make -j$(nproc)
+
+# Cross-compiling: pass your toolchain file. The target arch comes from
+# CMAKE_SYSTEM_PROCESSOR, and NLF_ENABLE_NATIVE_ARCH defaults to OFF automatically
+# (a "native" flag would otherwise describe the BUILD host, not the target).
+cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=/path/to/toolchain.cmake
+make -j$(nproc)
+
+# Offline / CI build: skip the plotting Python venv (no PyPI access needed). Point
+# -DOPTMATH_DIR at the sibling clone if it is not at the default ../ location.
+cmake .. -DCMAKE_BUILD_TYPE=Release -DNLF_BUILD_PYTHON_VENV=OFF \
+         -DOPTMATH_DIR=$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA
+make -j$(nproc)
+
+# (Optional) system install — installs the reusable filter headers under
+# <prefix>/include/nlf/ (plus run_benchmarks) to CMAKE_INSTALL_PREFIX
+# (default /usr/local; override with -DCMAKE_INSTALL_PREFIX=/path when configuring).
 sudo make install
 
 # Run all tests via CTest
@@ -492,10 +622,16 @@ ctest --output-on-failure
 
 # Or run individual tests
 ./EKF/ekf_test
+./EKF/ekf_smoother_test
 ./UKF/ukf_test
+./UKF/ukf_smoother_test
 ./UKF/srukf_test
+./UKF/srukf_angular_wrap_test
+./UKF/srukf_smoother_test
 ./PKF/pkf_test
+./PKF/pkf_example
 ./RBPKF/test_rbpf_basic
+./RBPKF/example_rbpf_ctrv
 
 # Audit-remediation regression tests
 ./UKF/test_ukf_numerical
@@ -510,22 +646,30 @@ ctest --output-on-failure
 source ../.nlfvenv/bin/activate
 python3 ../scripts/plot_benchmarks.py .
 
-# Run OptimizedKernels tests (Vulkan, radar, platform)
-./_deps/optimizedkernels-build/tests/test_vulkan_vector
-./_deps/optimizedkernels-build/tests/test_vulkan_matrix
-./_deps/optimizedkernels-build/tests/test_radar_caf
-./_deps/optimizedkernels-build/tests/test_radar_cfar
+# Run OptimizedKernels tests (Vulkan, radar, platform). The dependency is now
+# built under build/optmath-build/ (add_subdirectory), not _deps/.
+./optmath-build/tests/test_vulkan_vector
+./optmath-build/tests/test_vulkan_matrix
+./optmath-build/tests/test_radar_caf
+./optmath-build/tests/test_radar_cfar
 ```
 
 ### Build Options
 
 | Option | Description |
 |--------|-------------|
+| `-DNLF_ENABLE_NEON=OFF` | Do not build the ARM NEON kernels (default: ON for ARM targets, OFF everywhere else). Filter math falls back to Eigen |
+| `-DNLF_ENABLE_SVE2=OFF` | Do not build the ARM SVE2 kernels (default: ON for ARM targets). SVE2 sources are skipped anyway on ARM CPUs that lack SVE2 |
+| `-DNLF_ENABLE_VULKAN=OFF` | Do not build the Vulkan compute backend (default: ON; auto-skipped when no SDK is found) |
+| `-DNLF_ENABLE_NATIVE_ARCH=OFF` | Do not tune for the building machine's CPU. Default ON, and automatically OFF when cross-compiling. Turn OFF for portable/redistributable binaries. When ON, the build *probes* for `-mcpu=native` (ARM) or `-march=native` (x86) and degrades to portable codegen if neither compiles cleanly; MSVC has no equivalent and uses `/O2` |
+| `-DCMAKE_TOOLCHAIN_FILE=<path>` | Cross-compile. Target arch is read from `CMAKE_SYSTEM_PROCESSOR`; native tuning auto-disables |
 | `-DCMAKE_CUDA_COMPILER=""` | Disable CUDA (e.g., if toolkit is not installed or causes issues) |
-| `-DCMAKE_CUDA_ARCHITECTURES=native` | Build CUDA code for the detected GPU only (required for Blackwell SM 120 on CUDA 13.x) |
+| `-DCMAKE_CUDA_ARCHITECTURES=native` | Build CUDA code for the detected GPU only. Optional on CUDA 13.x (default list already includes Blackwell SM 100/120); useful to shrink build time |
 | `-DOPTMATH_CUDA_NATIVE=ON` | Make the OptimizedKernels dependency honor `native` instead of its default multi-arch list |
-| `-DOPTMATH_RELEASE_TAG=v0.5.15` | OptMathKernels release tag to fetch/pin (default `v0.5.15`). Bump only after auditing the upstream diff — see [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) |
-| `-DCMAKE_BUILD_TYPE=Release` | Optimized build with `-O3 -march=native` (forwarded to nvcc's host compiler via `-Xcompiler` for ABI consistency) |
+| `-DOPTMATH_DIR=<path>` | Path to the required OptimizedKernels sibling source tree (default `../OptimizedKernelsForRaspberryPi5_NvidiaCUDA`). Built directly from its local working tree (latest `main`) |
+| `-DAUTO_CLONE_DEPS=ON` | If `OPTMATH_DIR` is missing, clone it (latest `main`) over HTTPS instead of failing (default `OFF`). `./bootstrap.sh` does this interactively |
+| `-DNLF_BUILD_PYTHON_VENV=OFF` | Skip creating the plotting Python venv (the C++ build then needs no Python/PyPI — for offline/CI) |
+| `-DCMAKE_BUILD_TYPE=Release` | Optimized build: `-O3` (or `/O2` on MSVC) plus native tuning when `NLF_ENABLE_NATIVE_ARCH` is ON, forwarded to nvcc's host compiler via `-Xcompiler` for ABI consistency. Release flags are applied via `$<CONFIG:Release>` generator expressions, so multi-config generators (Ninja Multi-Config, Visual Studio, Xcode) get them too |
 | `-DCMAKE_BUILD_TYPE=Debug` | Debug build with symbols |
 | `-DCMAKE_BUILD_TYPE=RelWithDebInfo` | Optimized build with symbols (used by the sanitizer CI lane) |
 | `-DNLF_ENABLE_SANITIZERS=ON` | Attach AddressSanitizer + UndefinedBehaviorSanitizer to C++ TUs when the build type is `Debug` or `RelWithDebInfo`. Skips CUDA TUs (nvcc does not reliably forward `-fsanitize=...`). Used by the CI sanitizer lane. |
@@ -535,8 +679,12 @@ python3 ../scripts/plot_benchmarks.py .
 | Target | Description |
 |--------|-------------|
 | `EKF/ekf_test` | EKF with fixed-lag smoother on nonlinear oscillator |
+| `EKF/ekf_smoother_test` | EKF full-interval RTS / IEKS smoother regression |
 | `UKF/ukf_test` | UKF with fixed-lag smoother on drag ball model |
+| `UKF/ukf_smoother_test` | UKF full-interval RTS smoother regression |
 | `UKF/srukf_test` | SRUKF with fixed-lag smoother on drag ball model |
+| `UKF/srukf_angular_wrap_test` | SRUKF angular-observation (wrap) regression |
+| `UKF/srukf_smoother_test` | SRUKF full-interval RTS smoother regression |
 | `PKF/pkf_test` | Particle filter unit tests |
 | `PKF/pkf_example` | Particle filter on Lorenz-63 attractor |
 | `RBPKF/test_rbpf_basic` | RBPF unit tests |
@@ -570,11 +718,19 @@ int main() {
     Eigen::Matrix4f P0 = Eigen::Matrix4f::Identity();
     filter.initialize(x0, P0);
 
-    // Process measurements
+    // Process measurements.
+    //
+    // Timestep alignment matters: initialize() leaves the estimate AT time[0], and
+    // predict(t) evaluates the process model at t = where the state currently IS.
+    // So iteration 0 must not propagate, and advancing time[k-1] -> time[k] passes
+    // time[k-1] to predict() and time[k] to update().
     Eigen::Vector4f u = Eigen::Vector4f::Zero();
-    for (int k = 0; k < num_steps; ++k) {
-        filter.predict(time[k], u);
-        filter.update(time[k], measurements[k]);
+
+    filter.update(time[0], measurements[0]);   // fuse y0 where the estimate already is
+
+    for (int k = 1; k < num_steps; ++k) {
+        filter.predict(time[k - 1], u);        // propagate FROM time[k-1]
+        filter.update(time[k], measurements[k]);  // fuse a measurement taken AT time[k]
 
         auto x_est = filter.getState();
         auto P_est = filter.getCovariance();  // Reconstructs P = S*S^T
@@ -593,11 +749,20 @@ int main() {
     int lag = 50;
 
     UKFCore::SRUKFFixedLagSmoother<4, 2> smoother(model, lag);
-    smoother.initialize(x0, P0);
+    smoother.initialize(x0, P0);            // estimate now sits AT time[0]
 
     Eigen::Vector4f u = Eigen::Vector4f::Zero();
-    for (int k = 0; k < num_steps; ++k) {
-        smoother.step(time[k], measurements[k], u);
+
+    // If you have a measurement at time[0], fuse it where the estimate already is.
+    // Calling step() here instead would predict first, landing the estimate at
+    // time[1] and folding an observation of x(time[0]) into it. Skip this if your
+    // first measurement is at time[1].
+    smoother.observe_initial(time[0], measurements[0]);
+
+    for (int k = 1; k < num_steps; ++k) {
+        // Two DISTINCT times: propagate from where the estimate is (time[k-1]),
+        // then fuse a measurement taken at time[k].
+        smoother.step(time[k - 1], time[k], measurements[k], u);
 
         auto x_filt = smoother.get_filtered_state();
         auto x_smooth = smoother.get_smoothed_state(lag);  // Lag steps back
@@ -662,7 +827,7 @@ Modern-Computational-Nonlinear-Filtering/
 ├── Common/                     # Shared interfaces
 │   └── include/
 │       ├── FilterMath.h        # CUDA/SVE2/NEON/Eigen dispatch layer
-│       ├── FilterMathGPU.h     # GPU buffer management & sigma point context
+│       ├── FilterMathGPU.h     # experimental, not included by any filter
 │       ├── StateSpaceModel.h   # Base model for UKF/SRUKF
 │       ├── SystemModel.h       # Base model for EKF
 │       └── FileUtils.h         # File I/O utilities
@@ -670,12 +835,15 @@ Modern-Computational-Nonlinear-Filtering/
 ├── EKF/                        # Extended Kalman Filter
 │   ├── include/
 │   │   ├── EKF.h
-│   │   ├── EKFFixedLag.h
+│   │   ├── EKFFixedLag.h       # fixed-lag RTS
+│   │   ├── EKFSmoother.h       # full-interval RTS / iterated (IEKS)
 │   │   ├── BallTossModel.h
 │   │   └── NonlinearOscillator.h
 │   ├── src/
 │   │   ├── EKF.cpp
 │   │   └── EKFFixedLag.cpp
+│   ├── tests/
+│   │   └── test_ekf_smoother.cpp
 │   └── main.cpp
 │
 ├── UKF/                        # Unscented Kalman Filters
@@ -685,7 +853,13 @@ Modern-Computational-Nonlinear-Filtering/
 │   │   ├── SigmaPoints.h       # Sigma point generation
 │   │   ├── UnscentedFixedLagSmoother.h
 │   │   ├── SRUKFFixedLagSmoother.h
+│   │   ├── UKFSmoother.h       # full-interval RTS / iterated
+│   │   ├── SRUKFSmoother.h     # full-interval square-root RTS / iterated
 │   │   └── DragBallModel.h     # Example model
+│   ├── tests/
+│   │   ├── test_ukf_smoother.cpp
+│   │   ├── test_srukf_smoother.cpp
+│   │   └── test_srukf_angular_wrap.cpp
 │   ├── main.cpp                # UKF + smoother test
 │   └── main_srukf.cpp          # SRUKF + smoother test
 │
@@ -720,7 +894,8 @@ Modern-Computational-Nonlinear-Filtering/
 │
 ├── Benchmarks/                 # Comprehensive test suite
 │   ├── include/
-│   │   ├── BenchmarkProblems.h # 4 test problems
+│   │   ├── BenchmarkProblems.h # 5 models (4 in the default suite; Lorenz96
+│   │   │                       #   is provided but not run)
 │   │   └── BenchmarkRunner.h   # Metrics framework
 │   └── src/
 │       └── run_benchmarks.cpp
@@ -728,6 +903,8 @@ Modern-Computational-Nonlinear-Filtering/
 ├── scripts/                    # Visualization
 │   ├── simple_plot_benchmarks.py
 │   ├── plot_benchmarks.py
+│   ├── plot_optimized.py
+│   ├── plot_results.py
 │   ├── pkf_plot_results.py
 │   └── ukf_plot_results.py
 │
@@ -787,7 +964,7 @@ MIT License - see LICENSE file for details.
 
 ---
 
-**Version**: 3.2.0
-**Last Updated**: 25 May 2026
-**OptMathKernels**: pinned to release tag [v0.5.15](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.15)
-**Platform**: ARM aarch64 (Raspberry Pi 5, Orange Pi 5/6) + x86_64 (Vulkan + CUDA + Eigen) + NVIDIA GPU (SM 75–120 via CUDA 12.x/13.x; Blackwell RTX 50-series verified on SM 120 / CUDA 13.1)
+**Version**: 3.4.0
+**Last Updated**: 14 July 2026
+**OptMathKernels**: sibling source tree built via `add_subdirectory` (no pinned tag); currently v0.6.3
+**Portability**: portable C++20 + Eigen on any target; optional NEON/SVE2 (ARM), Vulkan (1.2+), and CUDA (SM 75–120 via CUDA 12.x/13.x) backends
