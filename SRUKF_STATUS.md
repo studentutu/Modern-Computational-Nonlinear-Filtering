@@ -1,11 +1,20 @@
 # SRUKF Implementation Status
 
-## Current State (v3.4.0, July 2026)
+## Current State (v3.4.2, July 2026)
 
 > SRUKF (R32) wraps angular **observation** innovations to [−π, π], and (R33)
 > exposes the normalized innovation squared (NIS) via `getLastNIS()` plus an
 > innovation gate with an optional reject-outliers policy (`setRejectOutliers()`).
 > See the Numerical Safety Chain below.
+>
+> **v3.4.2 hardening**: `initialize()` throws `std::runtime_error` on NaN / Inf /
+> asymmetric / non-PSD `P0` (including the condition number in the not-PSD
+> message) instead of silently degrading to `L0 = Identity`; the
+> innovation-gate threshold is now a member with `setInnovationGateChi2()` /
+> `getInnovationGateChi2()` accessors; the first gate firing per filter instance
+> logs a single line to `std::clog`; and `getGatedCount()` is exposed alongside
+> `getLastNIS()`. Regression coverage: the `SRUKF_Initialize` CTest (source
+> `UKF/tests/test_srukf_initialize.cpp`).
 
 ### All Benchmark Problems Working
 

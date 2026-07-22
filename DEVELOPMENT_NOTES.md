@@ -169,9 +169,13 @@ cmake -S . -B build-portable -DCMAKE_BUILD_TYPE=Release \
       -DNLF_ENABLE_NEON=OFF -DNLF_ENABLE_SVE2=OFF -DNLF_ENABLE_NATIVE_ARCH=OFF
 ```
 
-Both configure, build and pass: **30/30 CTest with NEON, 29/29 Eigen-only.** The
+Both configure, build and pass: **34/34 CTest with NEON, 33/33 Eigen-only.** The
 count differs by exactly one because `test_neon_fp16` — a *dependency* test — is
-not registered when NEON is off; no NLF test is lost.
+not registered when NEON is off; no NLF test is lost. (Original 2026-07-14 audit
+reported 30/30 vs 29/29 at v3.4.1; v3.4.2 audit-remediation adds four repo tests
+— `UKF_Numerical`, `SRUKF_Initialize`, `PKF_ParticleConst`, `RBPF_LogDet` — so
+the totals move by +4 on both sides without changing the +/-1 delta. OptMath
+was already at v0.6.3 for the July 14 measurement, so its count is unchanged.)
 
 Benchmark accuracy, NEON build → Eigen-only build (same host, same seeds). Values
 are as reported by `run_benchmarks` (6 significant figures); "identical" below means
@@ -273,11 +277,14 @@ make -j$(nproc)
 incl. `test_cuda_kernels` on the Blackwell GPU and the 4 Vulkan suites selecting
 the discrete GPU). Total CTest time ≈ 5.9 s.
 
-> **Current counts (2026-07-14, aarch64 Raspberry Pi 5, OptMath v0.6.3, no CUDA):
-> 30/30** — 12 registered by this repo (`add_test` in `CMakeLists.txt`) + 18 from
-> the dependency. The repo grew from 9 to 12 tests with `SRUKF_AngularWrap` (v3.3.0)
-> and the three smoother regressions (v3.4.0). The Eigen-only build is 29/29
-> (`test_neon_fp16` is not registered without NEON).
+> **Current counts (2026-07-22, x86_64 + RTX 5090, CUDA 13.0.88, Vulkan 1.3.275,
+> no NEON/SVE2, OptMath v0.6.3): 34/34** — 16 registered by this repo (`add_test`
+> in `CMakeLists.txt`) + 18 from the dependency (17 base + `test_cuda_kernels`).
+> The repo grew from 9 → 12 tests with `SRUKF_AngularWrap` (v3.3.0) and the three
+> smoother regressions (v3.4.0), then 12 → 16 with the four audit-remediation
+> regressions (v3.4.2: `UKF_Numerical`, `SRUKF_Initialize`, `PKF_ParticleConst`,
+> `RBPF_LogDet`). On the Pi 5 the equivalent is 34/34 with NEON / 33/33
+> Eigen-only (the -1 is `test_neon_fp16`, which requires NEON).
 
 ---
 
@@ -689,23 +696,27 @@ v3.3.0 above.)_
 
 ### Recommended follow-up: CI
 
-No CI is committed yet. A minimal GitHub Actions workflow would need to build
-CPU-only (`-DCMAKE_CUDA_COMPILER=""`), skip the venv (`-DNLF_BUILD_PYTHON_VENV=OFF`),
-and either provide a Vulkan loader / `glslang` on the runner or set
-`-DNLF_ENABLE_VULKAN=OFF` (it defaults ON, though it auto-skips when no SDK is
-found). Run
+**Landed in v3.4.2** — `.github/workflows/ci.yml` now runs two jobs on
+`ubuntu-latest`: a Release lane (`build-and-test`) and a RelWithDebInfo lane
+with ASan+UBSan (`sanitizers`). Both pre-clone OptMathKernels **v0.5.15** to
+`$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA` (pinned so CI stays
+reproducible even as local `main` moves), pass
+`-DOPTMATH_DIR="$HOME/OptimizedKernelsForRaspberryPi5_NvidiaCUDA"
+-DNLF_BUILD_PYTHON_VENV=OFF`, then build + `ctest --output-on-failure`. On
+v0.5.15 both lanes report **32/32** (16 filter + 16 OptMath at that pinned
+version). No CUDA on the GitHub runners, so those tiers exercise the
+Eigen/Vulkan fallbacks — the intended portability lane.
+
+The **sixteen** repo tests currently enforced are:
 
 ```
-ctest -R "EKF_Test|UKF_Test|SRUKF_Test|SRUKF_AngularWrap|SRUKF_Smoother|UKF_Smoother|EKF_Smoother|PKF_Test|PKF_Example|RBPF_Basic|RBPF_CTRV|Benchmarks"
+ctest -R "EKF_Test|UKF_Test|SRUKF_Test|SRUKF_AngularWrap|SRUKF_Smoother|UKF_Smoother|EKF_Smoother|PKF_Test|PKF_Example|RBPF_Basic|RBPF_CTRV|Benchmarks|UKF_Numerical|SRUKF_Initialize|PKF_ParticleConst|RBPF_LogDet"
 ```
 
-to enforce the **twelve** project tests on every clean checkout.
-
-Now that the build is architecture-aware, the matrix worth running is a portability
-one, and it needs no GPU: an x86_64 runner (`NLF_ENABLE_NEON`/`SVE2` default OFF
-there) plus an Eigen-only job
-(`-DNLF_ENABLE_NEON=OFF -DNLF_ENABLE_SVE2=OFF -DNLF_ENABLE_NATIVE_ARCH=OFF`) would
-have caught the ARM-only-flags-on-every-target defect fixed in v3.4.1.
+Now that the build is architecture-aware and CI is architecture-portable
+(x86_64 runner, `NLF_ENABLE_NEON`/`SVE2` default OFF there), the sustaining
+lane already exercises what the pre-v3.4.1 build would have gotten wrong:
+Eigen fallback with no NEON/SVE2 and no `-march=native` regressions.
 `NLF_ENABLE_NATIVE_ARCH=OFF` is also the right setting for any redistributable
 artifact a runner produces.
 

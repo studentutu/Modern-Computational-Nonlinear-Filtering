@@ -175,13 +175,15 @@ CTest passes on both. This repo registers **16** filter/benchmark tests
 (the original 12 plus `EKF_Smoother`, `UKF_Smoother`, `UKF_Numerical`,
 `SRUKF_Initialize`, `PKF_ParticleConst`, `RBPF_LogDet` — the smoother
 regressions and the four audit-remediation regressions); OptimizedKernels
-adds 15–18 more, depending on what the build detects (CUDA adds
-`test_cuda_kernels`, SVE2-capable ARM CPUs add `test_sve2_kernels`).
-Host A gets 32/32 (16 filter + 16 OptMath, no SVE2). Host B gets 31/31
-(16 filter + 15 OptMath, no CUDA, no SVE2). The exact dependency suite
-varies with the build: host A additionally exercises the CUDA kernel
-tests and selects the discrete GPU for the Vulkan suites; host B runs
-the same Vulkan suites on the VideoCore V3D and skips CUDA.
+adds 17–20 more, depending on what the build detects (17 base +
+`test_cuda_kernels` on CUDA hosts, `test_neon_fp16` on FP16-capable ARM
+CPUs, `test_sve2_kernels` on SVE2-capable ARM CPUs). Host A gets **34/34**
+(16 filter + 17 base OptMath + 1 CUDA, no NEON/FP16/SVE2). Host B gets
+**34/34** (16 filter + 17 base OptMath + 1 FP16 from Cortex-A76, no CUDA,
+no SVE2). The exact dependency suite varies with the build: host A
+additionally exercises the CUDA kernel tests and selects the discrete GPU
+for the Vulkan suites; host B runs the same Vulkan suites on the
+VideoCore V3D and skips CUDA.
 
 Reproduce everything below with:
 
@@ -971,7 +973,7 @@ MIT License - see LICENSE file for details.
 
 ---
 
-**Version**: 3.4.0
-**Last Updated**: 14 July 2026
+**Version**: 3.4.0 (CMake `project(... VERSION 3.4.0)`); the v3.4.1 and v3.4.2 changelog entries in [DEVELOPMENT_NOTES.md](DEVELOPMENT_NOTES.md) describe work landed on the 3.4.0 line — no CMake bump yet
+**Last Updated**: 22 July 2026
 **OptMathKernels**: sibling source tree built via `add_subdirectory` (no pinned tag); currently v0.6.3
 **Portability**: portable C++20 + Eigen on any target; optional NEON/SVE2 (ARM), Vulkan (1.2+), and CUDA (SM 75–120 via CUDA 12.x/13.x) backends
