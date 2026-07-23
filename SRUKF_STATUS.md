@@ -21,9 +21,9 @@
 | Problem | SRUKF RMSE | NEES median | In 95% bounds | Status |
 |---------|-----------|-------------|---------------|--------|
 | Coupled Oscillators (10D) | 1.457 | 9.89 | 94.5% | **WORKING** |
-| Van der Pol (2D) | 0.466 | 1.14 | 96.0% | **WORKING** |
-| Bearing-Only (4D) | 64.17 | 3.77 | 99.6% | **WORKING** |
-| Reentry Vehicle (6D) | 369.2 | 4.99 | 95.6% | **WORKING** |
+| Van der Pol (2D) | 0.467 | 1.14 | 95.9% | **WORKING** |
+| Bearing-Only (4D) | 63.84 | 3.72 | 99.6% | **WORKING** |
+| Reentry Vehicle (6D) | 367.1 | 4.99 | 95.9% | **WORKING** |
 
 > These are accuracy figures, not timings: they are backend-independent and
 > reproduce on any host and any acceleration tier (verified NEON vs Eigen-only —
@@ -45,8 +45,8 @@ it is covered by the `SRUKF_Smoother` CTest — see DEVELOPMENT_NOTES v3.4.0.
 |---------|-------------------|-------------|
 | Coupled Oscillators (10D) | 1.148 | 21% |
 | Van der Pol (2D) | 0.430 | 8% |
-| Bearing-Only (4D) | 52.03 | 19% |
-| Reentry Vehicle (6D) | 236.8 | 36% |
+| Bearing-Only (4D) | 51.68 | 19% |
+| Reentry Vehicle (6D) | 236.3 | 36% |
 
 ## Technical Details
 
